@@ -1,0 +1,31 @@
+---
+# Ubuntu has no system-wide crypto policy framework; per-service settings are
+# enforced in the ssh role (sshd) and via the OpenSSL defaults below. Ubuntu's
+# stock openssl.cnf already wires [openssl_init] -> ssl_sect -> system_default_sect.
+- name: Restrict OpenSSL defaults to TLS 1.2+ and SECLEVEL 2 (SC-13, SC-8)
+  ansible.builtin.lineinfile:
+    path: /etc/ssl/openssl.cnf
+    regexp: '^\s*{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value }}"
+    insertafter: '^\[system_default_sect\]'
+  loop:
+    - { key: MinProtocol, value: TLSv1.2 }
+    - { key: CipherString, value: "DEFAULT:@SECLEVEL=2" }
+    - { key: Options, value: "ServerPreference,PrioritizeChaCha" }
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Attach Ubuntu Pro for FIPS (SC-13)
+  ansible.builtin.command: "pro attach {{ kernel_ubuntu_pro_token }}"
+  changed_when: true
+  no_log: true
+  when:
+    - kernel_fips_enabled | bool
+    - kernel_ubuntu_pro_token | length > 0
+
+- name: Enable Ubuntu FIPS updates
+  ansible.builtin.command: pro enable fips-updates --assume-yes
+  changed_when: true
+  when:
+    - kernel_fips_enabled | bool
+    - not hardening_is_container | bool

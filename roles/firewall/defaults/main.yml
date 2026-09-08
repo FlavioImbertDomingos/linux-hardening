@@ -1,0 +1,15 @@
+---
+# Default-deny inbound host firewall (SC-7, CM-7).
+# RHEL: firewalld (drop zone + rich rules)   Ubuntu: nftables (templated ruleset)
+firewall_ssh_port: "{{ ssh_port | default(22) }}"
+firewall_admin_cidrs: "{{ hardening_admin_cidrs | default([]) }}"
+firewall_monitoring_cidrs: "{{ hardening_monitoring_cidrs | default([]) }}"
+firewall_node_exporter_port: 9100
+# Only open 9100 when node_exporter listens beyond loopback.
+firewall_expose_node_exporter: "{{ not (node_exporter_listen | default('127.0.0.1:9100')).startswith('127.') }}"
+# Additional inbound services: list of {port, proto, cidrs(optional)}
+firewall_extra_rules: []
+# Rate-limit ICMP echo instead of blocking it (keeps path MTU discovery working).
+firewall_icmp_ratelimit: "10/second"
+firewall_log_dropped: true
+firewall_log_rate: "5/minute"

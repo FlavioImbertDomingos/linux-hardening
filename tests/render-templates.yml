@@ -1,0 +1,44 @@
+---
+# Renders every template for a synthetic RHEL 9 and Ubuntu 24.04 host so the
+# output can be validated with the real parsers (sshd -t, visudo -c, nft -c,
+# rsyslogd -N1, auditctl, yaml/json). Used by CI; no target hosts needed.
+#   ansible-playbook tests/render-templates.yml -e render_out=/tmp/render
+- name: Render templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    render_out: "{{ lookup('env', 'RENDER_OUT') | default('/tmp/render', true) }}"
+    render_hosts:
+      rhel9:
+        ansible_os_family: RedHat
+        ansible_distribution: RedHat
+        ansible_distribution_version: "9.4"
+        ansible_distribution_major_version: "9"
+        ansible_distribution_release: Plow
+      rhel8:
+        ansible_os_family: RedHat
+        ansible_distribution: RedHat
+        ansible_distribution_version: "8.10"
+        ansible_distribution_major_version: "8"
+        ansible_distribution_release: Ootpa
+      ubuntu2404:
+        ansible_os_family: Debian
+        ansible_distribution: Ubuntu
+        ansible_distribution_version: "24.04"
+        ansible_distribution_major_version: "24"
+        ansible_distribution_release: noble
+      ubuntu2204:
+        ansible_os_family: Debian
+        ansible_distribution: Ubuntu
+        ansible_distribution_version: "22.04"
+        ansible_distribution_major_version: "22"
+        ansible_distribution_release: jammy
+  tasks:
+    - name: Render for each synthetic host
+      ansible.builtin.include_tasks: render-one.yml
+      loop: "{{ render_hosts | dict2items }}"
+      loop_control:
+        loop_var: render_host
+        label: "{{ render_host.key }}"

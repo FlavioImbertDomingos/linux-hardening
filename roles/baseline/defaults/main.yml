@@ -1,0 +1,81 @@
+---
+# Upgrade every package to the latest available before hardening (CM-6, SI-2).
+baseline_upgrade_all: true
+
+# Packages every image needs (per-family additions in vars/).
+baseline_packages_common:
+  - sudo
+  - chrony
+  - rsyslog
+  - aide
+  - jq
+  - curl
+  - ca-certificates
+  - gnupg
+  - tar
+  - unzip
+  - openscap-scanner
+
+# Packages that must NOT exist on a base image (CM-7 least functionality).
+baseline_packages_remove_common:
+  - telnet
+  - telnet-server
+  - rsh
+  - rsh-server
+  - talk
+  - talk-server
+  - ypbind
+  - ypserv
+  - tftp
+  - tftp-server
+  - xinetd
+  - avahi-daemon
+  - avahi
+  - cups
+  - samba
+  - squid
+  - vsftpd
+  - dovecot
+  - bind
+  - bind9
+  - net-snmp
+  - snmpd
+  - prelink
+  - setroubleshoot
+  - mcstrans
+  - nfs-utils
+  - nfs-kernel-server
+  - rpcbind
+  - iptables-services
+  - whoopsie
+  - apport
+  - popularity-contest
+  - xorg-x11-server-common
+  - xserver-xorg-core
+
+# Services to disable and mask if present (CM-7).
+baseline_services_disable:
+  - avahi-daemon.service
+  - avahi-daemon.socket
+  - cups.service
+  - cups.socket
+  - rpcbind.service
+  - rpcbind.socket
+  - bluetooth.service
+  - ModemManager.service
+  - debug-shell.service
+  - kdump.service
+  - nfs-server.service
+  - autofs.service
+  - ctrl-alt-del.target
+
+# Automatic security updates (SI-2). Images usually run with this on so that
+# instances self-patch; set false if you rebuild images on a fixed cadence.
+baseline_auto_security_updates: true
+baseline_auto_reboot: false
+
+baseline_timezone: Etc/UTC
+baseline_process_accounting: true  # psacct/acct — per-process accounting (AU-12)
+
+# Extra repos/tools you always want (empty by default).
+baseline_packages_extra: []

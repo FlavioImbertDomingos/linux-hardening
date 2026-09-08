@@ -1,0 +1,11 @@
+# {{ ansible_managed }} — NIST AC-7 unsuccessful logon attempts
+dir = /var/run/faillock
+audit
+silent
+deny = {{ auth_faillock_deny }}
+fail_interval = {{ auth_faillock_fail_interval }}
+unlock_time = {{ auth_faillock_unlock_time }}
+{% if auth_faillock_even_deny_root | bool %}
+even_deny_root
+root_unlock_time = {{ auth_faillock_root_unlock_time }}
+{% endif %}

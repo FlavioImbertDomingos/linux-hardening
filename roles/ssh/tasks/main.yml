@@ -1,0 +1,223 @@
+---
+- name: Ensure OpenSSH server is installed
+  ansible.builtin.package:
+    name: openssh-server
+    state: present
+  tags: [nist_AC-17]
+
+- name: Detect OpenSSH version
+  ansible.builtin.shell: |
+    set -o pipefail
+    ssh -V 2>&1 | sed -E 's/^OpenSSH_([0-9]+\.[0-9]+).*/\1/'
+  args:
+    executable: /bin/bash
+  register: ssh_version_raw
+  changed_when: false
+  tags: [always]
+
+- name: Compute capability facts
+  ansible.builtin.set_fact:
+    ssh_version: "{{ ssh_version_raw.stdout | trim }}"
+    ssh_supports_include: "{{ ssh_version_raw.stdout | trim is version('8.2', '>=') }}"
+    ssh_supports_sntrup: "{{ ssh_version_raw.stdout | trim is version('8.5', '>=') }}"
+    ssh_supports_pubkeyacceptedalgorithms: "{{ ssh_version_raw.stdout | trim is version('8.5', '>=') }}"
+  tags: [always]
+
+- name: Compute effective KEX list
+  ansible.builtin.set_fact:
+    ssh_kex_effective: >-
+      {{ ssh_kex_algorithms if ssh_supports_sntrup | bool
+         else ssh_kex_algorithms | reject('search', 'sntrup') | list }}
+  tags: [always]
+
+# --------------------------------------------------------------------------
+# Host keys  (SC-12, SC-13)
+# --------------------------------------------------------------------------
+- name: Remove weak host keys (DSA, ECDSA)
+  ansible.builtin.file:
+    path: "/etc/ssh/{{ item }}"
+    state: absent
+  loop:
+    - ssh_host_dsa_key
+    - ssh_host_dsa_key.pub
+    - ssh_host_ecdsa_key
+    - ssh_host_ecdsa_key.pub
+  notify: Restart sshd
+  tags: [nist_SC-12, nist_SC-13]
+
+- name: Ensure strong host keys exist
+  community.crypto.openssh_keypair:
+    path: "/etc/ssh/ssh_host_{{ item }}_key"
+    type: "{{ item }}"
+    size: "{{ ssh_rsa_bits if item == 'rsa' else omit }}"
+    comment: "{{ inventory_hostname }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ ssh_host_key_types }}"
+  notify: Restart sshd
+  tags: [nist_SC-12]
+
+- name: Restrict host key permissions
+  ansible.builtin.file:
+    path: "/etc/ssh/ssh_host_{{ item }}_key"
+    owner: root
+    group: "{{ 'ssh_keys' if ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8' else 'root' }}"
+    mode: "{{ '0640' if ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8' else '0600' }}"
+  loop: "{{ ssh_host_key_types }}"
+  tags: [nist_AC-6]
+
+- name: Stop RHEL from regenerating ECDSA host keys at boot
+  ansible.builtin.lineinfile:
+    path: /etc/sysconfig/sshd
+    regexp: '^\s*#?\s*AUTOCREATE_SERVER_KEYS='
+    line: >-
+      AUTOCREATE_SERVER_KEYS="{{ ssh_host_key_types | map('upper') | join(' ') }}"
+  when: ansible_os_family == 'RedHat'
+  tags: [nist_SC-13]
+
+- name: Mask ECDSA key generation unit (RHEL)
+  ansible.builtin.systemd:
+    name: sshd-keygen@ecdsa.service
+    masked: true
+  failed_when: false
+  when: ansible_os_family == 'RedHat'
+  tags: [nist_SC-13]
+
+- name: Remove weak Diffie-Hellman moduli
+  ansible.builtin.shell: |
+    set -o pipefail
+    if awk '$5 < {{ ssh_moduli_min_bits }}' /etc/ssh/moduli | grep -q .; then
+      awk '$5 >= {{ ssh_moduli_min_bits }}' /etc/ssh/moduli > /etc/ssh/moduli.tmp \
+        && mv /etc/ssh/moduli.tmp /etc/ssh/moduli && echo changed
+    fi
+  args:
+    executable: /bin/bash
+  register: ssh_moduli
+  changed_when: "'changed' in ssh_moduli.stdout"
+  tags: [nist_SC-13]
+
+# --------------------------------------------------------------------------
+# sshd configuration  (AC-17, IA-2, SC-8, SC-13, AC-12)
+# --------------------------------------------------------------------------
+- name: Ensure sshd_config.d exists
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: ssh_supports_include | bool
+  tags: [nist_AC-17]
+
+- name: Ensure sshd_config includes drop-ins first (first-match-wins)
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf'
+    line: "Include /etc/ssh/sshd_config.d/*.conf"
+    insertbefore: BOF
+    validate: "sshd -t -f %s"
+  when: ssh_supports_include | bool
+  tags: [nist_AC-17]
+
+- name: Remove cloud-image drop-ins that re-enable password auth
+  ansible.builtin.find:
+    paths: /etc/ssh/sshd_config.d
+    patterns: "*.conf"
+    contains: '(?i)^\s*PasswordAuthentication\s+yes'
+  register: ssh_cloud_dropins
+  when: ssh_supports_include | bool
+  tags: [nist_IA-5]
+
+- name: Delete those drop-ins
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ssh_cloud_dropins.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Restart sshd
+  tags: [nist_IA-5]
+
+- name: Write hardened sshd drop-in (OpenSSH >= 8.2)
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "sshd -t -f %s"
+  when: ssh_supports_include | bool
+  notify: Restart sshd
+  tags: [nist_AC-17, nist_IA-2, nist_SC-8, nist_SC-13, nist_AC-12]
+
+- name: Write full hardened sshd_config (OpenSSH < 8.2, e.g. RHEL 8)
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "sshd -t -f %s"
+  when: not ssh_supports_include | bool
+  notify: Restart sshd
+  tags: [nist_AC-17, nist_IA-2, nist_SC-8, nist_SC-13, nist_AC-12]
+
+- name: Detach sshd from crypto-policies so explicit algorithms apply (RHEL 8)
+  ansible.builtin.lineinfile:
+    path: /etc/sysconfig/sshd
+    regexp: '^\s*#?\s*CRYPTO_POLICY='
+    line: "CRYPTO_POLICY="
+  when:
+    - ansible_os_family == 'RedHat'
+    - ansible_distribution_major_version == '8'
+    - ssh_explicit_crypto | bool
+  notify: Restart sshd
+  tags: [nist_SC-13]
+
+- name: Restrict sshd_config permissions
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [nist_AC-6]
+
+- name: Create SSH access group
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ ssh_allow_groups }}"
+  tags: [nist_AC-17]
+
+# --------------------------------------------------------------------------
+# ssh client hygiene
+# --------------------------------------------------------------------------
+- name: Harden system ssh client defaults
+  ansible.builtin.copy:
+    dest: /etc/ssh/ssh_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }} — outbound SSH hygiene (SC-8, SC-13)
+      Host *
+          HashKnownHosts yes
+          ForwardAgent no
+          ForwardX11 no
+          StrictHostKeyChecking ask
+          UpdateHostKeys yes
+          Ciphers {{ ssh_ciphers | join(',') }}
+          MACs {{ ssh_macs | join(',') }}
+          KexAlgorithms {{ ssh_kex_effective | join(',') }}
+          HostKeyAlgorithms {{ ssh_host_key_algorithms | join(',') }}
+  when:
+    - ssh_client_hardening | bool
+    - ssh_supports_include | bool
+  tags: [nist_SC-8, nist_SC-13]
+
+- name: Enable sshd
+  ansible.builtin.systemd:
+    name: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
+    enabled: true
+  tags: [nist_AC-17]

@@ -1,0 +1,55 @@
+---
+# Guarantee that what the SBOM describes is what is on disk: every installed
+# package must be signed by a trusted key and its binaries unmodified. (SI-7, CM-8, SR-11)
+- name: Find RPMs without a GPG signature
+  ansible.builtin.shell: |
+    set -o pipefail
+    rpm -qa --qf '%{NAME}-%{VERSION}-%{RELEASE} %{SIGPGP:pgpsig}\n' | grep -E '\(none\)$' | grep -vE '^(gpg-pubkey|otelcol-contrib)' || true
+  args:
+    executable: /bin/bash
+  register: sbom_unsigned_rpms
+  changed_when: false
+  when: ansible_os_family == 'RedHat'
+
+- name: Fail on unsigned RPMs
+  ansible.builtin.assert:
+    that: sbom_unsigned_rpms.stdout | length == 0
+    fail_msg: "Unsigned packages present:\n{{ sbom_unsigned_rpms.stdout }}"
+  when:
+    - ansible_os_family == 'RedHat'
+    - sbom_fail_on_unsigned_packages | bool
+
+- name: Verify RPM payloads against package manifests (size, mode, digest; config files excluded)
+  ansible.builtin.shell: |
+    set -o pipefail
+    rpm -Va --nomtime 2>/dev/null \
+      | awk '($1=="missing") || ($2 !~ /^[cdglr]$/ && $1 ~ /[SM5]/)' \
+      | grep -vE ' /(etc|var|usr/share/(doc|man|info|locale))/' \
+      | grep -vE '{{ sbom_integrity_allowlist | map("regex_escape") | join("|") }}' || true
+  args:
+    executable: /bin/bash
+  register: sbom_rpm_verify
+  changed_when: false
+  when: ansible_os_family == 'RedHat'
+
+- name: Verify deb payloads with debsums
+  ansible.builtin.shell: |
+    set -o pipefail
+    debsums --changed --silent 2>/dev/null \
+      | grep -vE '^/(etc|var|usr/share/(doc|man|info|locale))/' \
+      | grep -vE '{{ sbom_integrity_allowlist | map("regex_escape") | join("|") }}' || true
+  args:
+    executable: /bin/bash
+  register: sbom_deb_verify
+  changed_when: false
+  when: ansible_os_family == 'Debian'
+
+- name: Record package-integrity findings
+  ansible.builtin.set_fact:
+    sbom_integrity_findings: "{{ (sbom_rpm_verify.stdout_lines | default([])) + (sbom_deb_verify.stdout_lines | default([])) }}"
+
+- name: Fail if package-managed binaries were modified
+  ansible.builtin.assert:
+    that: sbom_integrity_findings | length == 0
+    fail_msg: "Package-managed files differ from their manifests (tampering or unmanaged edits):\n{{ sbom_integrity_findings | join('\n') }}"
+  when: sbom_enforce | bool

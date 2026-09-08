@@ -1,0 +1,23 @@
+---
+# auditd refuses `systemctl restart` on RHEL (RefuseManualStop); use service.
+# Both distros' units run `augenrules --load` in ExecStartPost, so a restart
+# already loads the rule files.
+- name: Restart auditd
+  ansible.builtin.command: "{{ 'service auditd restart' if ansible_os_family == 'RedHat' else 'systemctl restart auditd' }}"
+  changed_when: true
+  when: not hardening_is_container | bool
+
+- name: Load audit rules
+  ansible.builtin.shell: |
+    set -o pipefail
+    # Once -e 2 is active the kernel rejects rule changes until reboot; the
+    # reboot play in harden-image.yml picks up the on-disk rule files.
+    if auditctl -s | grep -q '^enabled 2'; then
+      echo "audit rules immutable until reboot; on-disk rules will load at boot"
+      exit 0
+    fi
+    augenrules --load
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: not hardening_is_container | bool

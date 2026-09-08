@@ -1,0 +1,14 @@
+---
+- name: Include firewalld tasks (RHEL)
+  ansible.builtin.include_tasks: firewalld.yml
+  when:
+    - ansible_os_family == 'RedHat'
+    - not hardening_is_container | bool
+  tags: [nist_SC-7, nist_CM-7]
+
+- name: Include nftables tasks (Ubuntu)
+  ansible.builtin.include_tasks: nftables.yml
+  when:
+    - ansible_os_family == 'Debian'
+    - not hardening_is_container | bool
+  tags: [nist_SC-7, nist_CM-7]

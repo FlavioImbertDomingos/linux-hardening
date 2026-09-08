@@ -1,0 +1,17 @@
+---
+- name: "Query latest release of {{ sbom_gh_repo }}"
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ sbom_gh_repo }}/releases/latest"
+    headers: >-
+      {{ {'Accept': 'application/vnd.github+json'}
+         | combine({'Authorization': 'Bearer ' + sbom_github_token} if sbom_github_token | length > 0 else {}) }}
+    return_content: true
+  register: sbom_gh_release
+  delegate_to: localhost
+  become: false
+
+- name: "Record resolved version for {{ sbom_gh_repo }}"
+  ansible.builtin.set_fact:
+    sbom_resolved_versions: >-
+      {{ sbom_resolved_versions | default({})
+         | combine({sbom_gh_repo: sbom_gh_release.json.tag_name | regex_replace('^v', '')}) }}

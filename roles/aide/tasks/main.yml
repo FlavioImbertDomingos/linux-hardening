@@ -1,0 +1,59 @@
+---
+- name: Install AIDE
+  ansible.builtin.package:
+    name: "{{ ['aide'] if ansible_os_family == 'RedHat' else ['aide', 'aide-common'] }}"
+    state: present
+  tags: [nist_SI-7]
+
+- name: Configure AIDE (SI-7 software, firmware and information integrity)
+  ansible.builtin.template:
+    src: aide.conf.j2
+    dest: "{{ aide_conf }}"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [nist_SI-7]
+
+- name: Disable Ubuntu's stock daily cron/timer in favour of our unit
+  ansible.builtin.systemd:
+    name: dailyaidecheck.timer
+    enabled: false
+    masked: true
+  failed_when: false
+  when: ansible_os_family == 'Debian'
+  tags: [nist_SI-7]
+
+- name: Install AIDE check service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - aide-check.service
+    - aide-check.timer
+  notify: Reload systemd
+  tags: [nist_SI-7]
+
+- name: Enable AIDE check timer (SI-7(1) integrity checks)
+  ansible.builtin.systemd:
+    name: aide-check.timer
+    enabled: true
+    daemon_reload: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"
+  tags: [nist_SI-7]
+
+- name: Protect AIDE database and log directories (AU-9(3))
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ aide_db_dir }}"
+    - /var/log/aide
+  tags: [nist_AU-9]
+# The database itself is initialised by the finalize role, after every other
+# change to the image, so the baseline matches what ships.

@@ -1,0 +1,159 @@
+---
+- name: Install audit packages
+  ansible.builtin.package:
+    name: "{{ ['audit', 'audispd-plugins'] if ansible_os_family == 'RedHat' else ['auditd', 'audispd-plugins'] }}"
+    state: present
+  tags: [nist_AU-2, nist_AU-12]
+
+# audit >= 3.0 (RHEL 8/9, Ubuntu 22.04+) keeps plugins under /etc/audit/plugins.d
+- name: Set plugin paths
+  ansible.builtin.set_fact:
+    auditd_plugins_dir: /etc/audit/plugins.d
+    auditd_remote_conf: /etc/audit/audisp-remote.conf
+  tags: [always]
+
+- name: Configure auditd daemon (AU-4, AU-5, AU-9)
+  ansible.builtin.template:
+    src: auditd.conf.j2
+    dest: /etc/audit/auditd.conf
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart auditd
+  tags: [nist_AU-4, nist_AU-5, nist_AU-9]
+
+- name: Remove distro sample rule files that would conflict
+  ansible.builtin.find:
+    paths: /etc/audit/rules.d
+    patterns: "*.rules"
+    excludes: "10-hardening.rules,20-privileged.rules,99-finalize.rules"
+  register: auditd_stale_rules
+  tags: [nist_AU-2]
+
+- name: Delete stale rule files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ auditd_stale_rules.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: Load audit rules
+  tags: [nist_AU-2]
+
+- name: Enumerate privileged (SUID/SGID) executables for AU-12 coverage
+  ansible.builtin.shell: |
+    set -o pipefail
+    find / -xdev \( -path /proc -o -path /sys \) -prune -o -type f \( -perm -4000 -o -perm -2000 \) -print 2>/dev/null | sort -u
+  args:
+    executable: /bin/bash
+  register: auditd_privileged_bins
+  changed_when: false
+  tags: [nist_AU-12, nist_AC-6]
+
+- name: Install NIST-mapped audit rules
+  ansible.builtin.template:
+    src: 10-hardening.rules.j2
+    dest: /etc/audit/rules.d/10-hardening.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load audit rules
+  tags: [nist_AU-2, nist_AU-3, nist_AU-12, nist_AC-6, nist_AC-2, nist_CM-5]
+
+- name: Install privileged-command audit rules
+  ansible.builtin.template:
+    src: 20-privileged.rules.j2
+    dest: /etc/audit/rules.d/20-privileged.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load audit rules
+  tags: [nist_AU-12, nist_AC-6]
+
+- name: Install immutability / finalisation rules (must sort last)
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/99-finalize.rules
+    owner: root
+    group: root
+    mode: "0640"
+    content: |
+      # {{ ansible_managed }} — NIST AU-9: rules immutable until reboot
+      -e {{ auditd_enabled_flag }}
+  notify: Load audit rules
+  tags: [nist_AU-9]
+
+- name: Configure syslog plugin (mirror events to journald/rsyslog)
+  ansible.builtin.copy:
+    dest: "{{ auditd_plugins_dir }}/syslog.conf"
+    owner: root
+    group: root
+    mode: "0640"
+    content: |
+      # {{ ansible_managed }} — NIST AU-6(4) central review
+      active = {{ 'yes' if auditd_syslog_plugin | bool else 'no' }}
+      direction = out
+      path = /sbin/audisp-syslog
+      type = always
+      args = LOG_INFO LOG_LOCAL6
+      format = string
+  notify: Restart auditd
+  tags: [nist_AU-6]
+
+- name: Configure audisp-remote for off-host audit shipping (AU-4(1), AU-9(2))
+  ansible.builtin.template:
+    src: audisp-remote.conf.j2
+    dest: "{{ auditd_remote_conf }}"
+    owner: root
+    group: root
+    mode: "0640"
+  when: auditd_remote_server | length > 0
+  notify: Restart auditd
+  tags: [nist_AU-4, nist_AU-9]
+
+- name: Enable/disable audisp-remote plugin
+  ansible.builtin.lineinfile:
+    path: "{{ auditd_plugins_dir }}/au-remote.conf"
+    regexp: '^active\s*='
+    line: "active = {{ 'yes' if auditd_remote_server | length > 0 else 'no' }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart auditd
+  tags: [nist_AU-4]
+
+- name: Protect audit tools (AU-9(3))
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /sbin/auditctl
+    - /sbin/aureport
+    - /sbin/ausearch
+    - /sbin/autrace
+    - /sbin/auditd
+    - /sbin/augenrules
+  failed_when: false
+  tags: [nist_AU-9]
+
+- name: Protect audit log directory
+  ansible.builtin.file:
+    path: /var/log/audit
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [nist_AU-9]
+
+- name: Ensure auditd is enabled
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"
+  tags: [nist_AU-12]
+
+- name: Flush handlers so rules are loaded before verification
+  ansible.builtin.meta: flush_handlers
+  tags: [always]

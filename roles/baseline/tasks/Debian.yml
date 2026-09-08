@@ -1,0 +1,58 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Forbid unauthenticated packages (SI-7, CM-5)
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99-hardening
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Get::AllowUnauthenticated "false";
+      Acquire::AllowInsecureRepositories "false";
+      Acquire::AllowDowngradeToInsecureRepositories "false";
+      APT::Install-Recommends "false";
+      APT::Install-Suggests "false";
+      Acquire::http::AllowRedirect "true";
+      Acquire::https::Verify-Peer "true";
+
+- name: Configure unattended-upgrades for security pockets only (SI-2)
+  ansible.builtin.template:
+    src: 50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  when: baseline_auto_security_updates | bool
+
+- name: Enable periodic unattended upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "{{ '1' if baseline_auto_security_updates | bool else '0' }}";
+      APT::Periodic::AutocleanInterval "7";
+
+- name: Ensure needrestart drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/needrestart/conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Silence needrestart interactive prompts during builds
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      $nrconf{restart} = 'a';
+      $nrconf{kernelhints} = -1;

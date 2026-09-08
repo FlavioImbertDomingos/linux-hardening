@@ -1,0 +1,7 @@
+## {{ ansible_managed }}
+## NIST AU-12 / AC-6(9): every setuid/setgid executable present on this image
+## at build time is audited when executed by a real user.
+## Regenerate with: ansible-playbook playbooks/harden-image.yml --tags auditd
+{% for path in auditd_privileged_bins.stdout_lines %}
+-a always,exit -F path={{ path }} -F perm=x -F auid>={{ auditd_uid_min }} -F auid!=unset -k privileged
+{% endfor %}

@@ -1,0 +1,17 @@
+---
+baseline_packages_family:
+  - unattended-upgrades
+  - apt-listchanges
+  - apparmor
+  - apparmor-utils
+  - auditd
+  - audispd-plugins
+  - aide-common
+  - libpam-pwquality
+  - debsums
+  - acct
+  - needrestart
+baseline_pkg_mgr: apt
+baseline_audit_pkg: auditd
+baseline_chrony_conf: /etc/chrony/chrony.conf
+baseline_chrony_service: chrony

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# NIST SP 800-53 Rev.5: SC-39 (process isolation), SI-16 (memory protection),
+# SC-5 (DoS protection), SC-7 (boundary protection), CM-7 (least functionality)
+{% for key, value in kernel_sysctl_effective.items() %}
+{{ key }} = {{ value }}
+{% endfor %}
+{% if kernel_restrict_user_namespaces | bool %}
+{% if ansible_os_family == 'Debian' %}
+kernel.unprivileged_userns_clone = 0
+{% else %}
+user.max_user_namespaces = 0
+{% endif %}
+{% endif %}

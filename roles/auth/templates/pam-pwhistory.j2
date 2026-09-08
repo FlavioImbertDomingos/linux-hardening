@@ -1,0 +1,6 @@
+Name: Remember previous passwords (NIST IA-5(1))
+Default: yes
+Priority: 1024
+Password-Type: Primary
+Password:
+	requisite	pam_pwhistory.so remember={{ auth_pwhistory_remember }} use_authtok enforce_for_root

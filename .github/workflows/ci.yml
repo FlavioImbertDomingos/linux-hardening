@@ -1,0 +1,50 @@
+---
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: ansible-lint (production profile) + syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ansible ansible-lint yamllint
+      - run: ansible-galaxy collection install -r requirements.yml
+      - run: yamllint .
+      - run: ansible-lint
+      - run: ansible-playbook --syntax-check playbooks/harden-image.yml
+      - run: ansible-playbook --syntax-check playbooks/verify.yml
+
+  render:
+    name: render templates and validate with real parsers
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y openssh-server sudo nftables rsyslog auditd python3-yaml
+      - run: pip install ansible
+      - run: ansible-galaxy collection install -r requirements.yml
+      - run: RENDER_OUT=/tmp/render ansible-playbook tests/render-templates.yml
+      - run: sudo RENDER_OUT=/tmp/render bash tests/validate-rendered.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rendered-configs
+          path: /tmp/render
+
+  # Full image builds run in your image pipeline (Packer/EC2 Image Builder) where a
+  # real VM, reboot and outbound access are available; wire it like this:
+  # build:
+  #   needs: render
+  #   runs-on: [self-hosted, packer]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: packer init packer && packer build -var image_version=${{ github.run_number }} packer/ubuntu2404.pkr.hcl
+  #       env: { GIT_SHA: ${{ github.sha }}, GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}, COSIGN_KEY: ${{ secrets.COSIGN_KEY }}, COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }} }
+  #     - uses: actions/upload-artifact@v4
+  #       with: { name: sbom-and-compliance, path: artifacts/ }

@@ -1,0 +1,25 @@
+---
+- name: Restart node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: restarted
+    daemon_reload: true
+  when: not hardening_is_container | bool
+
+- name: Restorecon node_exporter
+  ansible.builtin.command: restorecon -v /usr/local/bin/node_exporter
+  changed_when: true
+
+- name: Restart otelcol
+  ansible.builtin.systemd:
+    name: otelcol-contrib
+    state: restarted
+    daemon_reload: true
+  when: not hardening_is_container | bool
+
+- name: Restart fluent-bit
+  ansible.builtin.systemd:
+    name: fluent-bit
+    state: restarted
+    daemon_reload: true
+  when: not hardening_is_container | bool

@@ -1,0 +1,93 @@
+# {{ ansible_managed }}
+# NIST SP 800-53 Rev.5: AC-17 remote access, IA-2 identification & authentication,
+# SC-8 transmission confidentiality, SC-13 cryptographic protection,
+# AC-12 session termination, AU-3 audit content.
+{% if not ssh_supports_include | bool %}
+# Full configuration for OpenSSH {{ ssh_version }} (no Include support).
+{% if ansible_os_family == 'RedHat' %}
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+SyslogFacility AUTHPRIV
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp /usr/libexec/openssh/sftp-server -f AUTHPRIV -l INFO
+AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+AcceptEnv LC_IDENTIFICATION LC_ALL LANGUAGE XMODIFIERS
+{% endif %}
+{% endif %}
+
+# --- network ---
+Port {{ ssh_port }}
+AddressFamily {{ ssh_address_family }}
+{% for a in ssh_listen_addresses %}
+ListenAddress {{ a }}
+{% endfor %}
+
+# --- authentication ---
+PermitRootLogin {{ ssh_permit_root_login }}
+PubkeyAuthentication yes
+PasswordAuthentication {{ ssh_password_authentication }}
+ChallengeResponseAuthentication no
+PermitEmptyPasswords no
+HostbasedAuthentication no
+IgnoreRhosts yes
+IgnoreUserKnownHosts yes
+UsePAM yes
+{% if ssh_password_authentication == 'no' %}
+AuthenticationMethods publickey
+{% endif %}
+MaxAuthTries {{ ssh_max_auth_tries }}
+MaxSessions {{ ssh_max_sessions }}
+MaxStartups {{ ssh_max_startups }}
+LoginGraceTime {{ ssh_login_grace_time }}
+StrictModes yes
+{% if ssh_allow_groups | length > 0 %}
+AllowGroups {{ ssh_allow_groups | join(' ') }}
+{% endif %}
+{% if ssh_deny_users | length > 0 %}
+DenyUsers {{ ssh_deny_users | join(' ') }}
+{% endif %}
+
+# --- session ---
+ClientAliveInterval {{ ssh_client_alive_interval }}
+ClientAliveCountMax {{ ssh_client_alive_count_max }}
+TCPKeepAlive no
+Banner {{ ssh_banner }}
+PrintMotd no
+PrintLastLog yes
+UseDNS {{ ssh_use_dns }}
+PermitUserEnvironment no
+PermitUserRC no
+Compression no
+
+# --- forwarding / tunnelling (CM-7) ---
+AllowTcpForwarding {{ ssh_allow_tcp_forwarding }}
+AllowAgentForwarding {{ ssh_allow_agent_forwarding }}
+AllowStreamLocalForwarding no
+X11Forwarding {{ ssh_x11_forwarding }}
+X11UseLocalhost yes
+PermitTunnel {{ ssh_permit_tunnel }}
+GatewayPorts {{ ssh_gateway_ports }}
+DisableForwarding {{ 'yes' if ssh_allow_tcp_forwarding == 'no' and ssh_allow_agent_forwarding == 'no' and ssh_x11_forwarding == 'no' else 'no' }}
+
+# --- logging (AU-3, AU-12) ---
+LogLevel {{ ssh_log_level }}
+
+# --- cryptography (SC-8, SC-12, SC-13) ---
+RekeyLimit {{ ssh_rekey_limit }}
+{% if ssh_explicit_crypto | bool %}
+KexAlgorithms {{ ssh_kex_effective | join(',') }}
+Ciphers {{ ssh_ciphers | join(',') }}
+MACs {{ ssh_macs | join(',') }}
+HostKeyAlgorithms {{ ssh_host_key_algorithms | join(',') }}
+{% if ssh_supports_pubkeyacceptedalgorithms | bool %}
+PubkeyAcceptedAlgorithms {{ ssh_pubkey_accepted_algorithms | join(',') }}
+{% else %}
+PubkeyAcceptedKeyTypes {{ ssh_pubkey_accepted_algorithms | join(',') }}
+{% endif %}
+{% endif %}
+{% if ssh_supports_include | bool %}
+{% for t in ssh_host_key_types %}
+HostKey /etc/ssh/ssh_host_{{ t }}_key
+{% endfor %}
+{% endif %}

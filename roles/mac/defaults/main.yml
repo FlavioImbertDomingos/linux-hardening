@@ -1,0 +1,17 @@
+---
+# SELinux (RHEL family)
+mac_selinux_state: enforcing
+mac_selinux_policy: targeted
+# Booleans tightened on a base image (AC-3, AC-6). Adjust per workload.
+mac_selinux_booleans:
+  - { name: deny_ptrace, state: true }
+  - { name: selinuxuser_execheap, state: false }
+  - { name: selinuxuser_execstack, state: false }
+  - { name: secure_mode_insmod, state: false }   # true would block ALL module loads post-boot
+  - { name: ssh_sysadm_login, state: false }
+  - { name: deny_execmem, state: false }         # breaks JITs (Java/Node); flip per workload
+
+# AppArmor (Debian family)
+mac_apparmor_enforce_all: true
+# Profiles to leave in complain mode (empty on base image).
+mac_apparmor_complain: []

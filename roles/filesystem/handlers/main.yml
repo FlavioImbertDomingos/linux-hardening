@@ -1,0 +1,8 @@
+---
+- name: Remount changed filesystems
+  ansible.builtin.command: mount -o remount {{ item }} # noqa command-instead-of-module — remount of an existing entry
+  loop:
+    - /dev/shm
+  changed_when: true
+  failed_when: false
+  when: not hardening_is_container | bool

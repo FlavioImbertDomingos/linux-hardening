@@ -1,0 +1,42 @@
+---
+# Mount hardening (CM-7, AC-6). Separate partitions must be created by the
+# image build (see packer/); this role only tightens options on whatever exists.
+filesystem_tmp_as_tmpfs: true
+filesystem_tmp_size: 2G
+filesystem_mount_options:
+  /tmp: "defaults,nodev,nosuid,noexec"
+  /var/tmp: "defaults,nodev,nosuid,noexec"
+  /dev/shm: "defaults,nodev,nosuid,noexec"
+  /home: "defaults,nodev,nosuid"
+  /var: "defaults,nodev"
+  /var/log: "defaults,nodev,nosuid,noexec"
+  /var/log/audit: "defaults,nodev,nosuid,noexec"
+  /boot: "defaults,nodev,nosuid,noexec"
+# hidepid=2 on /proc hides other users' processes. Breaks systemd-logind on
+# some setups; off by default (CIS/STIG do not require it for servers).
+filesystem_proc_hidepid: false
+
+# Default umask for logins (AC-6)
+filesystem_umask: "027"
+
+# SUID/SGID bits stripped from binaries a server never needs privileged (AC-6).
+filesystem_strip_suid:
+  - /usr/bin/chfn
+  - /usr/bin/chsh
+  - /usr/bin/wall
+  - /usr/bin/write
+  - /usr/bin/mount
+  - /usr/bin/umount
+  - /usr/bin/at
+  - /usr/bin/newgrp
+  - /usr/bin/gpasswd
+  - /usr/bin/fusermount
+  - /usr/bin/fusermount3
+  - /usr/bin/pkexec
+  - /usr/lib/openssh/ssh-keysign
+  - /usr/libexec/openssh/ssh-keysign
+  - /usr/sbin/pam_timestamp_check
+# Keep: /usr/bin/passwd /usr/bin/sudo /usr/bin/su /usr/sbin/unix_chkpwd
+
+# Cron/at restricted to root (AC-6)
+filesystem_restrict_cron: true

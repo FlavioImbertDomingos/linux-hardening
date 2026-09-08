@@ -1,0 +1,14 @@
+# {{ ansible_managed }} — NIST SI-2 flaw remediation
+[commands]
+upgrade_type = security
+random_sleep = 900
+network_online_timeout = 60
+download_updates = yes
+apply_updates = yes
+reboot = {{ 'when-needed' if baseline_auto_reboot | bool else 'never' }}
+
+[emitters]
+emit_via = stdio,motd
+
+[base]
+debuglevel = 1

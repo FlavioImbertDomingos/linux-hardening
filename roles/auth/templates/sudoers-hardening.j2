@@ -1,0 +1,15 @@
+# {{ ansible_managed }} — NIST AC-6(9) auditing of privileged functions, AC-6(10)
+Defaults use_pty
+Defaults logfile="{{ auth_sudo_logfile }}"
+{% if auth_sudo_iolog | bool %}
+Defaults log_input, log_output
+Defaults iolog_dir="/var/log/sudo-io/%{user}"
+{% endif %}
+Defaults timestamp_timeout={{ auth_sudo_timestamp_timeout }}
+Defaults passwd_timeout=1
+Defaults !visiblepw
+Defaults env_reset
+Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults umask=0027
+Defaults umask_override
+Defaults syslog=authpriv

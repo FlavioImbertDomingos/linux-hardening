@@ -1,0 +1,51 @@
+---
+# Versions checked September 2026. "latest" resolves via the GitHub releases
+# API at build time (set GITHUB_TOKEN in CI to avoid rate limits); a pinned
+# version is reproducible and preferred for release builds.
+observability_node_exporter_version: "1.12.1"
+observability_otelcol_version: "latest"
+observability_fluentbit_version: ""          # "" = newest in the official repo
+observability_github_token: "{{ lookup('env', 'GITHUB_TOKEN') | default('', true) }}"
+
+# Downloads are staged here (NOT /tmp, which is mounted noexec by the filesystem role).
+observability_staging_dir: /var/lib/hardening/staging
+observability_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+
+# ---- node_exporter (SI-4 system monitoring) ----
+observability_node_exporter_listen: "{{ node_exporter_listen | default('127.0.0.1:9100') }}"
+observability_node_exporter_textfile_dir: /var/lib/node_exporter/textfile
+observability_node_exporter_collectors_enable:
+  - systemd
+  - processes
+  - tcpstat
+  - textfile
+observability_node_exporter_collectors_disable:
+  - wifi
+  - infiniband
+  - hwmon
+  - nfs
+  - nfsd
+  - zfs
+  - btrfs
+# Optional TLS/basic-auth web config for node_exporter when exposed on the network.
+observability_node_exporter_tls_cert: ""
+observability_node_exporter_tls_key: ""
+
+# ---- OpenTelemetry Collector (SI-4, AU-6) ----
+observability_otel_endpoint: "{{ otel_exporter_endpoint | default('otel-gateway.example.internal:4317') }}"
+observability_otel_tls_insecure: "{{ otel_exporter_tls_insecure | default(false) }}"
+observability_otel_ca_file: "{{ otel_exporter_ca_file | default('') }}"
+observability_otel_headers: "{{ otel_exporter_headers | default({}) }}"
+observability_otel_collection_interval: 30s
+observability_otel_memory_limit_mib: 256
+observability_otel_queue_size: 5000
+observability_otel_local_otlp_grpc: "127.0.0.1:4317"
+observability_otel_local_otlp_http: "127.0.0.1:4318"
+
+# ---- Fluent Bit (AU-6, AU-4(1)) ----
+observability_fluentbit_ship_audit_log: true
+observability_fluentbit_ship_sudo_log: true
+observability_fluentbit_mem_buf_limit: 50M
+observability_fluentbit_storage_dir: /var/lib/fluent-bit/storage

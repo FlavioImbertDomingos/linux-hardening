@@ -1,0 +1,150 @@
+# {{ ansible_managed }}
+# On-host OpenTelemetry Collector — NIST SI-4 monitoring, AU-6 review/analysis,
+# AU-4(1) transfer to alternate storage. Single egress point for metrics, logs
+# and traces; Fluent Bit hands logs in over loopback OTLP/HTTP.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: {{ observability_otel_local_otlp_grpc }}
+      http:
+        endpoint: {{ observability_otel_local_otlp_http }}
+
+  hostmetrics:
+    collection_interval: {{ observability_otel_collection_interval }}
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
+      load: {}
+      disk: {}
+      filesystem:
+        exclude_mount_points:
+          mount_points: ["/run/.*", "/sys/.*", "/proc/.*", "/dev/.*", "/snap/.*"]
+          match_type: regexp
+        exclude_fs_types:
+          fs_types: [autofs, binfmt_misc, bpf, cgroup2, configfs, debugfs, devpts, devtmpfs, fusectl, hugetlbfs, iso9660, mqueue, nsfs, overlay, proc, procfs, pstore, rpc_pipefs, securityfs, selinuxfs, squashfs, sysfs, tracefs]
+          match_type: strict
+      network: {}
+      paging: {}
+      processes: {}
+
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: node
+          scrape_interval: {{ observability_otel_collection_interval }}
+          static_configs:
+            - targets: ["{{ observability_node_exporter_listen if observability_node_exporter_listen.startswith('127.') else '127.0.0.1:' + observability_node_exporter_listen.split(':')[-1] }}"]
+{% if observability_node_exporter_tls_cert | length > 0 %}
+          scheme: https
+          tls_config:
+            insecure_skip_verify: true
+{% endif %}
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: {{ observability_otel_memory_limit_mib }}
+    spike_limit_mib: {{ (observability_otel_memory_limit_mib | int / 4) | int }}
+
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 5s
+    override: false
+    system:
+      hostname_sources: [os]
+      resource_attributes:
+        host.id:
+          enabled: true
+        os.description:
+          enabled: true
+
+  resource:
+    attributes:
+      - key: image.name
+        value: "{{ image_name }}"
+        action: upsert
+      - key: image.version
+        value: "{{ image_version }}"
+        action: upsert
+      - key: image.git_sha
+        value: "{{ image_git_sha }}"
+        action: upsert
+      - key: hardening.profile
+        value: "{{ hardening_profile | default('nist-800-53-moderate') }}"
+        action: upsert
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+exporters:
+  otlp:
+    endpoint: "{{ observability_otel_endpoint }}"
+    tls:
+      insecure: {{ observability_otel_tls_insecure | bool | lower }}
+{% if observability_otel_ca_file | length > 0 %}
+      ca_file: "{{ observability_otel_ca_file }}"
+{% endif %}
+      min_version: "1.2"
+{% if observability_otel_headers | length > 0 %}
+    headers:
+{% for k, v in observability_otel_headers.items() %}
+      {{ k }}: "{{ v }}"
+{% endfor %}
+{% endif %}
+    compression: gzip
+    sending_queue:
+      enabled: true
+      queue_size: {{ observability_otel_queue_size }}
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 0
+
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol-contrib/storage
+    timeout: 1s
+    compaction:
+      on_start: true
+      directory: /var/lib/otelcol-contrib/storage
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+service:
+  extensions: [file_storage, health_check]
+  telemetry:
+    logs:
+      level: info
+      encoding: json
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
+  pipelines:
+    metrics:
+      receivers: [hostmetrics, prometheus, otlp]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [otlp]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [otlp]

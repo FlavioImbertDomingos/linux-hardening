@@ -1,0 +1,135 @@
+---
+- name: Install OpenSCAP scanner
+  ansible.builtin.package:
+    name: "{{ ['openscap-scanner', 'scap-security-guide'] if ansible_os_family == 'RedHat' else ['openscap-scanner', 'openscap-utils'] }}"
+    state: present
+  tags: [nist_CA-2, nist_CA-7]
+
+- name: Create report directory
+  ansible.builtin.file:
+    path: "{{ compliance_report_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [always]
+
+- name: Locate SSG datastream (RHEL family package)
+  ansible.builtin.set_fact:
+    compliance_datastream: >-
+      /usr/share/xml/scap/ssg/content/ssg-{{ compliance_ssg_prefix[ansible_distribution]
+      | default(ansible_distribution | lower) }}{{ ansible_distribution_major_version }}-ds.xml
+  vars:
+    compliance_ssg_prefix: { RedHat: rhel, Rocky: rl, AlmaLinux: almalinux, CentOS: cs, OracleLinux: ol }
+  when: ansible_os_family == 'RedHat'
+  tags: [always]
+
+- name: Fall back to the RHEL datastream for clones (Rocky/Alma)
+  ansible.builtin.stat:
+    path: "{{ compliance_datastream }}"
+  register: compliance_ds_stat
+  when: ansible_os_family == 'RedHat'
+  tags: [always]
+
+- name: Use ssg-rhelN-ds.xml when a clone-specific stream is absent
+  ansible.builtin.set_fact:
+    compliance_datastream: "/usr/share/xml/scap/ssg/content/ssg-rhel{{ ansible_distribution_major_version }}-ds.xml"
+  when:
+    - ansible_os_family == 'RedHat'
+    - not compliance_ds_stat.stat.exists
+  tags: [always]
+
+- name: Fetch ComplianceAsCode content (Ubuntu)
+  ansible.builtin.include_tasks: ssg_ubuntu.yml
+  when: ansible_os_family == 'Debian'
+  tags: [nist_CA-2]
+
+- name: Copy tailoring file
+  ansible.builtin.copy:
+    src: "{{ compliance_tailoring_file }}"
+    dest: "{{ compliance_report_dir }}/tailoring.xml"
+    owner: root
+    group: root
+    mode: "0640"
+  when: compliance_tailoring_file | length > 0
+  tags: [nist_CA-2]
+
+- name: Set effective profile id
+  ansible.builtin.set_fact:
+    compliance_profile_id: >-
+      {{ compliance_tailoring_profile_id if compliance_tailoring_profile_id | length > 0
+         else 'xccdf_org.ssgproject.content_profile_' + compliance_profile }}
+  tags: [always]
+
+- name: Evaluate the image (CA-2, CM-6) against profile {{ compliance_profile }}
+  ansible.builtin.command: >-
+    oscap xccdf eval
+    --profile {{ compliance_profile_id }}
+    {{ '--tailoring-file ' + compliance_report_dir + '/tailoring.xml' if compliance_tailoring_file | length > 0 else '' }}
+    --results-arf {{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.arf.xml
+    --results {{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.results.xml
+    --report {{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.report.html
+    {{ compliance_datastream }}
+  register: compliance_eval
+  changed_when: false
+  # oscap exits 2 when any rule fails — that is data, not an error.
+  failed_when: compliance_eval.rc not in [0, 2]
+  tags: [nist_CA-2, nist_CM-6, nist_RA-5]
+
+- name: Generate control-centric guide for the profile
+  ansible.builtin.command: >-
+    oscap xccdf generate guide --profile {{ compliance_profile_id }}
+    {{ '--tailoring-file ' + compliance_report_dir + '/tailoring.xml' if compliance_tailoring_file | length > 0 else '' }}
+    --output {{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.guide.html
+    {{ compliance_datastream }}
+  changed_when: false
+  when: compliance_generate_guide | bool
+  tags: [nist_CA-2]
+
+- name: Compute pass/fail counts
+  ansible.builtin.shell: |
+    set -o pipefail
+    f={{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.results.xml
+    pass=$(grep -c '<result>pass</result>' "$f" || true)
+    fail=$(grep -c '<result>fail</result>' "$f" || true)
+    echo "{\"pass\": ${pass:-0}, \"fail\": ${fail:-0}}"
+  args:
+    executable: /bin/bash
+  register: compliance_counts_raw
+  changed_when: false
+  tags: [nist_CA-2]
+
+- name: Set compliance score
+  ansible.builtin.set_fact:
+    compliance_counts: "{{ compliance_counts_raw.stdout | from_json }}"
+  tags: [always]
+
+- name: Set score percentage
+  ansible.builtin.set_fact:
+    compliance_score: >-
+      {{ (100 * compliance_counts.pass | int / ((compliance_counts.pass | int + compliance_counts.fail | int) or 1)) | round(1) }}
+  tags: [always]
+
+- name: Compliance result
+  ansible.builtin.debug:
+    msg: >-
+      OpenSCAP {{ compliance_profile }}: {{ compliance_counts.pass }} pass / {{ compliance_counts.fail }} fail
+      ({{ compliance_score }}%) — report: {{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.report.html
+  tags: [nist_CA-2]
+
+- name: Enforce minimum compliance score
+  ansible.builtin.assert:
+    that: compliance_score | float >= compliance_min_score | float
+    fail_msg: "Compliance score {{ compliance_score }}% is below the required {{ compliance_min_score }}%"
+  when: compliance_min_score | float > 0
+  tags: [nist_CA-2]
+
+- name: Export compliance reports to the controller
+  ansible.builtin.fetch:
+    src: "{{ compliance_report_dir }}/{{ image_name }}-{{ image_version }}.{{ item }}"
+    dest: "{{ compliance_export_dir }}/{{ inventory_hostname }}/"
+    flat: true
+    mode: "0640"
+  loop: [report.html, results.xml, arf.xml, guide.html]
+  failed_when: false
+  tags: [nist_CA-2, nist_AU-11]

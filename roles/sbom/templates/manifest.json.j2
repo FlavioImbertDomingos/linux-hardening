@@ -1,0 +1,37 @@
+{{ {
+  "schema": "pulseai.systems/hardened-image-manifest/v1",
+  "image": {
+    "name": image_name,
+    "version": image_version,
+    "git_sha": image_git_sha,
+    "builder": image_builder | default('manual'),
+    "os": ansible_distribution ~ ' ' ~ ansible_distribution_version,
+    "kernel": ansible_kernel,
+    "architecture": ansible_architecture,
+    "hardening_profile": hardening_profile | default('nist-800-53-moderate'),
+    "built_at": sbom_timestamp
+  },
+  "tools": {
+    "syft": sbom_syft_v,
+    "grype": sbom_grype_v,
+    "cosign": sbom_cosign_v,
+    "grype_db_built": sbom_summary.db_built
+  },
+  "sbom": {
+    "components": sbom_component_count.stdout | int,
+    "formats": sbom_formats
+  },
+  "vulnerabilities": sbom_summary,
+  "gate": {
+    "fail_on": sbom_fail_on,
+    "only_fixed": sbom_only_fixed | bool,
+    "enforced": sbom_enforce | bool,
+    "result": 'pass' if sbom_gate.rc == 0 else 'fail',
+    "accepted_risks": sbom_vuln_ignore
+  },
+  "package_integrity": {
+    "verified": sbom_verify_package_integrity | bool,
+    "findings": sbom_integrity_findings | default([])
+  },
+  "artifacts": dict(sbom_hashes.stdout_lines | map('regex_replace', '^([^ ]+) +([^ ]+)$', '\\2=\\1') | map('split', '=', 1))
+} | to_nice_json(indent=2) }}

@@ -1,0 +1,46 @@
+---
+- name: Compute SBOM facts
+  ansible.builtin.set_fact:
+    sbom_arch: "{{ sbom_arch_map[ansible_architecture] | default(ansible_architecture) }}"
+    sbom_source_name: "{{ image_name }}"
+    sbom_source_version: "{{ image_version }}"
+    sbom_basename: "{{ image_name }}-{{ image_version }}"
+    sbom_timestamp: "{{ ansible_date_time.iso8601 }}"
+  tags: [always]
+
+- name: Ensure directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ sbom_staging_dir }}"
+    - "{{ sbom_dir }}"
+  tags: [always]
+
+- name: Install supply-chain tooling (cosign, syft, grype)
+  ansible.builtin.include_tasks: install_tools.yml
+  tags: [nist_SR-4, nist_SI-7, sbom_tools]
+
+- name: Verify installed package integrity
+  ansible.builtin.include_tasks: package_integrity.yml
+  when: sbom_verify_package_integrity | bool
+  tags: [nist_SI-7, nist_CM-8]
+
+- name: Generate SBOM
+  ansible.builtin.include_tasks: generate.yml
+  tags: [nist_SR-4, nist_CM-8]
+
+- name: Scan SBOM for vulnerabilities and gate the build
+  ansible.builtin.include_tasks: scan.yml
+  tags: [nist_RA-5, nist_SI-2, nist_SR-3]
+
+- name: Sign and attest artefacts
+  ansible.builtin.include_tasks: attest.yml
+  tags: [nist_SR-4, nist_SI-7]
+
+- name: Export artefacts to the controller
+  ansible.builtin.include_tasks: export.yml
+  tags: [nist_SR-4, nist_AU-11]

@@ -1,0 +1,129 @@
+---
+- name: Resolve otelcol-contrib version
+  ansible.builtin.include_tasks: github_latest.yml
+  vars:
+    observability_gh_repo: open-telemetry/opentelemetry-collector-releases
+  when: observability_otelcol_version == 'latest'
+
+- name: Set otelcol version
+  ansible.builtin.set_fact:
+    observability_otel_version: "{{ observability_gh_version if observability_otelcol_version == 'latest' else observability_otelcol_version }}"
+    observability_otel_pkg_ext: "{{ 'rpm' if ansible_os_family == 'RedHat' else 'deb' }}"
+
+- name: Check installed otelcol-contrib version
+  ansible.builtin.command: /usr/bin/otelcol-contrib --version
+  register: observability_otel_installed
+  changed_when: false
+  failed_when: false
+
+- name: Download otelcol-contrib package and checksums
+  ansible.builtin.get_url:
+    url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ observability_otel_version }}/{{ item }}"
+    dest: "{{ observability_staging_dir }}/{{ item }}"
+    headers: "{{ {'Authorization': 'Bearer ' + observability_github_token} if observability_github_token | length > 0 else omit }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - "otelcol-contrib_{{ observability_otel_version }}_linux_{{ observability_arch }}.{{ observability_otel_pkg_ext }}"
+    - opentelemetry-collector-releases_otelcol-contrib_checksums.txt
+  when: observability_otel_version not in observability_otel_installed.stdout | default('')
+
+- name: Verify otelcol-contrib checksum (SI-7 integrity)
+  ansible.builtin.shell: |
+    set -o pipefail
+    cd {{ observability_staging_dir }}
+    grep " otelcol-contrib_{{ observability_otel_version }}_linux_{{ observability_arch }}.{{ observability_otel_pkg_ext }}$" \
+      opentelemetry-collector-releases_otelcol-contrib_checksums.txt | sha256sum -c -
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: observability_otel_version not in observability_otel_installed.stdout | default('')
+
+- name: Install otelcol-contrib (rpm)
+  ansible.builtin.dnf:
+    name: "{{ observability_staging_dir }}/otelcol-contrib_{{ observability_otel_version }}_linux_{{ observability_arch }}.rpm"
+    state: present
+    disable_gpg_check: true   # integrity enforced by the sha256 step above
+  when:
+    - ansible_os_family == 'RedHat'
+    - observability_otel_version not in observability_otel_installed.stdout | default('')
+
+- name: Install otelcol-contrib (deb)
+  ansible.builtin.apt:
+    deb: "{{ observability_staging_dir }}/otelcol-contrib_{{ observability_otel_version }}_linux_{{ observability_arch }}.deb"
+    state: present
+  when:
+    - ansible_os_family == 'Debian'
+    - observability_otel_version not in observability_otel_installed.stdout | default('')
+
+- name: Create collector storage directory
+  ansible.builtin.file:
+    path: /var/lib/otelcol-contrib/storage
+    state: directory
+    owner: otelcol-contrib
+    group: otelcol-contrib
+    mode: "0750"
+
+- name: Write collector configuration
+  ansible.builtin.template:
+    src: otelcol-config.yaml.j2
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+    validate: "/usr/bin/otelcol-contrib validate --config=%s"
+  notify: Restart otelcol
+
+- name: Ensure collector environment file exists (finalize stamps image attributes here)
+  ansible.builtin.copy:
+    dest: /etc/otelcol-contrib/otelcol-contrib.conf
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+    force: false
+    content: |
+      # {{ ansible_managed }}
+      OTELCOL_OPTIONS="--config=/etc/otelcol-contrib/config.yaml"
+      OTEL_RESOURCE_ATTRIBUTES=image.name={{ image_name }},image.version={{ image_version }}
+
+- name: Create systemd drop-in directory for otelcol-contrib
+  ansible.builtin.file:
+    path: /etc/systemd/system/otelcol-contrib.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Harden collector service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/otelcol-contrib.service.d/hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Service]
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      PrivateDevices=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      RestrictSUIDSGID=true
+      RestrictRealtime=true
+      LockPersonality=true
+      SystemCallArchitectures=native
+      ReadWritePaths=/var/lib/otelcol-contrib
+      Restart=always
+      RestartSec=5
+  notify: Restart otelcol
+
+- name: Enable otelcol-contrib
+  ansible.builtin.systemd:
+    name: otelcol-contrib
+    enabled: true
+    daemon_reload: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"

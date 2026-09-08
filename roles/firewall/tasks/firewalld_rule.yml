@@ -1,0 +1,11 @@
+---
+- name: "Allow inbound rule on port {{ firewall_rule.port }}"
+  ansible.posix.firewalld:
+    zone: drop
+    rich_rule: >-
+      rule family="ipv4" source address="{{ item }}"
+      port port="{{ firewall_rule.port }}" protocol="{{ firewall_rule.proto | default('tcp') }}" accept
+    state: enabled
+    permanent: true
+    immediate: true
+  loop: "{{ firewall_rule.cidrs | default(['0.0.0.0/0']) }}"

@@ -1,0 +1,33 @@
+---
+- name: Compose syft output arguments
+  ansible.builtin.set_fact:
+    sbom_syft_outputs: >-
+      {{ sbom_formats | map('regex_replace', '^(.*)$', '-o \1=' + sbom_dir + '/' + sbom_basename + '.\1.json') | join(' ') }}
+    sbom_syft_exclude_args: "{{ sbom_syft_excludes | map('regex_replace', '^(.*)$', '--exclude \\1') | join(' ') }}"
+
+- name: Generate SBOM of the whole root filesystem (SR-4, CM-8)
+  ansible.builtin.command: >-
+    /usr/local/bin/syft scan dir:/
+    --base-path /
+    --source-name {{ sbom_source_name }}
+    --source-version {{ sbom_source_version }}
+    {{ sbom_syft_exclude_args }}
+    {{ sbom_syft_outputs }}
+    --quiet
+  environment:
+    SYFT_CHECK_FOR_APP_UPDATE: "false"
+  changed_when: true
+  register: sbom_syft_run
+
+- name: Count components in the SBOM
+  ansible.builtin.shell: |
+    set -o pipefail
+    jq '.artifacts | length' {{ sbom_dir }}/{{ sbom_basename }}.syft-json.json
+  args:
+    executable: /bin/bash
+  register: sbom_component_count
+  changed_when: false
+
+- name: Record SBOM summary
+  ansible.builtin.debug:
+    msg: "SBOM generated: {{ sbom_component_count.stdout }} components -> {{ sbom_dir }}/{{ sbom_basename }}.{spdx-json,cyclonedx-json,syft-json}.json"

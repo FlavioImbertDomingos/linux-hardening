@@ -1,0 +1,36 @@
+---
+# File integrity monitoring (SI-7, SI-7(1), AU-9(3)).
+aide_db_dir: "{{ '/var/lib/aide' }}"
+aide_conf: "{{ '/etc/aide.conf' if ansible_os_family == 'RedHat' else '/etc/aide/aide.conf' }}"
+aide_check_calendar: "daily"           # systemd OnCalendar for aide-check.timer
+aide_check_randomized_delay: 3600
+aide_report_to_syslog: true
+# Directories included in the baseline. Anything under /var/log, /proc, /sys,
+# /run, /tmp and package caches is excluded in the template.
+aide_include_paths:
+  - /boot
+  - /bin
+  - /sbin
+  - /lib
+  - /lib64
+  - /usr
+  - /etc
+  - /opt
+  - /root
+  - /var/lib/sbom
+  - /var/lib/node_exporter
+aide_exclude_paths:
+  - /usr/src
+  - /usr/tmp
+  - /etc/mtab
+  - /etc/.pwd.lock
+  - /etc/lvm/cache
+  - /etc/resolv.conf
+  - /etc/machine-id
+  - /root/.ansible
+  - /root/.cache
+  # regenerated / written on first boot — would otherwise flag on the first check
+  - /etc/ssh/ssh_host_
+  - /etc/hostname
+  - /etc/hosts
+  - /etc/otelcol-contrib/otelcol-contrib.conf

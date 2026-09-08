@@ -1,0 +1,275 @@
+## {{ ansible_managed }}
+## NIST SP 800-53 Rev.5 audit rule set — {{ ansible_distribution }} {{ ansible_distribution_version }} ({{ ansible_architecture }})
+## AU-2 event logging, AU-3 content, AU-12 generation, AC-2(4) account changes,
+## AC-6(9) privileged functions, CM-5(1) access restrictions for change, MP-2.
+{% set uid_min = auditd_uid_min %}
+{% set x86 = ansible_architecture == 'x86_64' %}
+{% set arches = ['b64', 'b32'] if x86 else ['b64'] %}
+{# syscall names that exist on both x86_64 and aarch64 #}
+{% set sc_perm = 'fchmod,fchmodat,fchown,fchownat,setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr' %}
+{% set sc_perm_x86 = 'chmod,chown,lchown' %}
+{% set sc_open = 'openat,truncate,ftruncate' %}
+{% set sc_open_x86 = 'open,creat' %}
+{% set sc_delete = 'unlinkat,renameat,renameat2' %}
+{% set sc_delete_x86 = 'unlink,rename,rmdir' %}
+{% set sc_mount = 'mount,umount2' %}
+{% set sc_time = 'adjtimex,settimeofday,clock_settime' %}
+{% set sc_time_x86 = 'stime' %}
+
+## ---- control ----
+-D
+-c
+-b {{ auditd_buffer_size }}
+-f {{ auditd_failure_mode }}
+--backlog_wait_time {{ auditd_backlog_wait_time }}
+--loginuid-immutable
+
+## ---- self-protection: audit configuration and logs (AU-9) ----
+-w /etc/audit/ -p wa -k auditconfig
+-w /etc/libaudit.conf -p wa -k auditconfig
+-w /etc/audisp/ -p wa -k audispconfig
+-w /var/log/audit/ -p rwxa -k auditlog
+-w /sbin/auditctl -p x -k audittools
+-w /sbin/auditd -p x -k audittools
+-w /sbin/augenrules -p x -k audittools
+-w /sbin/ausearch -p x -k audittools
+-w /sbin/aureport -p x -k audittools
+-w /sbin/autrace -p x -k audittools
+-w /usr/sbin/auditctl -p x -k audittools
+-w /usr/sbin/auditd -p x -k audittools
+-w /usr/sbin/augenrules -p x -k audittools
+
+## ---- noise reduction (keep before catch-alls) ----
+-a always,exclude -F msgtype=CWD
+-a never,user -F subj_type=crond_t
+{% if ansible_os_family == 'RedHat' %}
+-a never,exit -F arch=b64 -S adjtimex -F auid=unset -F uid=chrony -F subj_type=chronyd_t
+{% else %}
+-a never,exit -F arch=b64 -S adjtimex -F auid=unset -F uid=_chrony
+{% endif %}
+
+## ---- time changes (AU-8) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S {{ sc_time }}{{ ',' + sc_time_x86 if a == 'b32' else '' }} -k time-change
+{% endfor %}
+-w /etc/localtime -p wa -k time-change
+
+## ---- identity / account management (AC-2(4), IA-4) ----
+-w /etc/group -p wa -k identity
+-w /etc/passwd -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+-w /etc/subuid -p wa -k identity
+-w /etc/subgid -p wa -k identity
+-w /etc/nsswitch.conf -p wa -k identity
+-w /etc/login.defs -p wa -k identity
+-w /etc/default/useradd -p wa -k identity
+-w /usr/sbin/useradd -p x -k identity
+-w /usr/sbin/userdel -p x -k identity
+-w /usr/sbin/usermod -p x -k identity
+-w /usr/sbin/groupadd -p x -k identity
+-w /usr/sbin/groupdel -p x -k identity
+-w /usr/sbin/groupmod -p x -k identity
+-w /usr/sbin/adduser -p x -k identity
+-w /usr/sbin/deluser -p x -k identity
+
+## ---- privilege escalation / sudo (AC-6(9)) ----
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d/ -p wa -k scope
+-w /var/log/sudo.log -p wa -k actions
+-w /bin/su -p x -k priv_esc
+-w /usr/bin/su -p x -k priv_esc
+-w /usr/bin/sudo -p x -k priv_esc
+-w /usr/bin/sudoedit -p x -k priv_esc
+-w /usr/bin/pkexec -p x -k priv_esc
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S setuid,setgid,setreuid,setregid,setresuid,setresgid -F auid>={{ uid_min }} -F auid!=unset -k priv_esc
+{% endfor %}
+
+## ---- authentication events (AU-2, AC-7) ----
+-w /var/log/faillog -p wa -k logins
+-w /var/log/lastlog -p wa -k logins
+-w /var/log/tallylog -p wa -k logins
+-w /var/run/faillock/ -p wa -k logins
+-w /var/log/btmp -p wa -k session
+-w /var/log/wtmp -p wa -k session
+-w /var/run/utmp -p wa -k session
+-w /etc/pam.d/ -p wa -k pam
+-w /etc/security/ -p wa -k pam
+-w /etc/authselect/ -p wa -k pam
+
+## ---- network environment (CM-6, SC-7) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S sethostname,setdomainname -k system-locale
+{% endfor %}
+-w /etc/issue -p wa -k system-locale
+-w /etc/issue.net -p wa -k system-locale
+-w /etc/hosts -p wa -k system-locale
+-w /etc/hostname -p wa -k system-locale
+-w /etc/resolv.conf -p wa -k system-locale
+{% if ansible_os_family == 'RedHat' %}
+-w /etc/sysconfig/network -p wa -k system-locale
+-w /etc/sysconfig/network-scripts/ -p wa -k system-locale
+{% endif %}
+-w /etc/NetworkManager/ -p wa -k system-locale
+-w /etc/netplan/ -p wa -k system-locale
+-w /etc/network/ -p wa -k system-locale
+-w /etc/firewalld/ -p wa -k firewall
+-w /etc/nftables.conf -p wa -k firewall
+-w /usr/sbin/nft -p x -k firewall
+-w /usr/bin/firewall-cmd -p x -k firewall
+-w /usr/sbin/iptables -p x -k firewall
+
+## ---- mandatory access control policy (AC-3) ----
+-w /etc/selinux/ -p wa -k MAC-policy
+-w /usr/share/selinux/ -p wa -k MAC-policy
+-w /etc/apparmor/ -p wa -k MAC-policy
+-w /etc/apparmor.d/ -p wa -k MAC-policy
+-w /usr/sbin/setenforce -p x -k MAC-policy
+-w /usr/sbin/semanage -p x -k MAC-policy
+-w /usr/sbin/setsebool -p x -k MAC-policy
+-w /usr/bin/chcon -p x -k MAC-policy
+-w /usr/sbin/restorecon -p x -k MAC-policy
+-w /usr/sbin/aa-enforce -p x -k MAC-policy
+-w /usr/sbin/aa-complain -p x -k MAC-policy
+-w /usr/sbin/apparmor_parser -p x -k MAC-policy
+
+## ---- discretionary access control changes (AC-3, AC-6) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S {{ sc_perm }}{{ ',' + sc_perm_x86 if x86 else '' }} -F auid>={{ uid_min }} -F auid!=unset -k perm_mod
+{% endfor %}
+
+## ---- unsuccessful file access attempts (AC-3, AU-2) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S {{ sc_open }}{{ ',' + sc_open_x86 if x86 else '' }} -F exit=-EACCES -F auid>={{ uid_min }} -F auid!=unset -k access
+-a always,exit -F arch={{ a }} -S {{ sc_open }}{{ ',' + sc_open_x86 if x86 else '' }} -F exit=-EPERM -F auid>={{ uid_min }} -F auid!=unset -k access
+{% endfor %}
+
+## ---- file deletion by users (AU-12) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S {{ sc_delete }}{{ ',' + sc_delete_x86 if x86 else '' }} -F auid>={{ uid_min }} -F auid!=unset -k delete
+{% endfor %}
+
+## ---- mounts (MP-2 media access, CM-7) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S {{ sc_mount }} -F auid>={{ uid_min }} -F auid!=unset -k mounts
+{% endfor %}
+-w /usr/bin/mount -p x -k mounts
+-w /usr/bin/umount -p x -k mounts
+-w /etc/fstab -p wa -k mounts
+
+## ---- kernel modules (CM-5, SI-7) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S init_module,finit_module,delete_module -k modules
+{% endfor %}
+-w /usr/sbin/insmod -p x -k modules
+-w /usr/sbin/rmmod -p x -k modules
+-w /usr/sbin/modprobe -p x -k modules
+-w /usr/bin/kmod -p x -k modules
+-w /etc/modprobe.d/ -p wa -k modules
+-w /etc/modules-load.d/ -p wa -k modules
+
+## ---- kernel / boot configuration (CM-5, CM-6) ----
+-w /etc/sysctl.conf -p wa -k sysctl
+-w /etc/sysctl.d/ -p wa -k sysctl
+-w /boot/ -p wa -k boot
+-w /etc/default/grub -p wa -k boot
+-w /etc/default/grub.d/ -p wa -k boot
+-w /etc/grub.d/ -p wa -k boot
+-w /etc/crypto-policies/ -p wa -k crypto
+-w /etc/ssl/openssl.cnf -p wa -k crypto
+-w /etc/pki/ -p wa -k crypto
+-w /etc/ssl/certs/ -p wa -k crypto
+{# b32 only: the i386 audit table names this sys_kexec_load, so auditctl rejects it; kernel.kexec_load_disabled=1 covers it #}
+-a always,exit -F arch=b64 -S kexec_load,kexec_file_load -k kexec
+
+## ---- scheduled jobs (CM-5) ----
+-w /etc/cron.allow -p wa -k cron
+-w /etc/cron.deny -p wa -k cron
+-w /etc/cron.d/ -p wa -k cron
+-w /etc/cron.daily/ -p wa -k cron
+-w /etc/cron.hourly/ -p wa -k cron
+-w /etc/cron.monthly/ -p wa -k cron
+-w /etc/cron.weekly/ -p wa -k cron
+-w /etc/crontab -p wa -k cron
+-w /var/spool/cron/ -p wa -k cron
+-w /etc/at.allow -p wa -k cron
+-w /etc/systemd/ -p wa -k systemd
+-w /usr/lib/systemd/system/ -p wa -k systemd
+-w /usr/bin/systemctl -p x -k systemd
+
+## ---- SSH configuration and keys (AC-17) ----
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd
+-w /etc/ssh/ssh_config -p wa -k sshd
+-w /etc/ssh/ssh_config.d/ -p wa -k sshd
+-w /root/.ssh/ -p wa -k rootkey
+
+## ---- software management (CM-5(1), CM-11, SI-7) ----
+-w /usr/bin/dnf -p x -k software_mgmt
+-w /usr/bin/yum -p x -k software_mgmt
+-w /usr/bin/rpm -p x -k software_mgmt
+-w /usr/bin/apt -p x -k software_mgmt
+-w /usr/bin/apt-get -p x -k software_mgmt
+-w /usr/bin/dpkg -p x -k software_mgmt
+-w /usr/bin/pip -p x -k software_mgmt
+-w /usr/bin/pip3 -p x -k software_mgmt
+-w /usr/bin/snap -p x -k software_mgmt
+-w /etc/yum.repos.d/ -p wa -k software_mgmt
+-w /etc/apt/ -p wa -k software_mgmt
+-w /var/lib/sbom/ -p wa -k sbom
+-w /etc/image-release -p wa -k sbom
+
+## ---- observability / logging pipeline configuration (AU-9) ----
+-w /etc/rsyslog.conf -p wa -k logging
+-w /etc/rsyslog.d/ -p wa -k logging
+-w /etc/systemd/journald.conf -p wa -k logging
+-w /etc/systemd/journald.conf.d/ -p wa -k logging
+-w /etc/otelcol-contrib/ -p wa -k logging
+-w /etc/fluent-bit/ -p wa -k logging
+-w /etc/aide/ -p wa -k integrity
+-w /etc/aide.conf -p wa -k integrity
+-w /var/lib/aide/ -p wa -k integrity
+
+## ---- process tracing / injection (SI-16) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S ptrace -F a0=0x4 -k code-injection
+-a always,exit -F arch={{ a }} -S ptrace -F a0=0x5 -k data-injection
+-a always,exit -F arch={{ a }} -S ptrace -F a0=0x6 -k register-injection
+-a always,exit -F arch={{ a }} -S ptrace -k tracing
+-a always,exit -F arch={{ a }} -S personality -k bypass
+-a always,exit -F arch={{ a }} -S memfd_create -F auid>={{ uid_min }} -F auid!=unset -k fileless
+{% endfor %}
+
+## ---- suspicious tooling (SI-4) ----
+-w /usr/bin/wget -p x -k susp_activity
+-w /usr/bin/curl -p x -k susp_activity
+-w /usr/bin/base64 -p x -k susp_activity
+-w /bin/nc -p x -k susp_activity
+-w /usr/bin/ncat -p x -k susp_activity
+-w /usr/bin/nmap -p x -k susp_activity
+-w /usr/bin/socat -p x -k susp_activity
+-w /usr/bin/ssh -p x -k susp_activity
+-w /usr/bin/scp -p x -k susp_activity
+-w /usr/bin/sftp -p x -k susp_activity
+-w /usr/bin/gdb -p x -k susp_activity
+-w /usr/bin/strace -p x -k susp_activity
+-w /usr/bin/tcpdump -p x -k susp_activity
+
+{% if auditd_log_all_execve | bool %}
+## ---- every command by a real user (AU-12, AU-14) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S execve -F auid>={{ uid_min }} -F auid!=unset -k user_cmd
+{% endfor %}
+{% endif %}
+
+## ---- root activity: all execve by uid 0 with a real login uid (AC-6(9)) ----
+{% for a in arches %}
+-a always,exit -F arch={{ a }} -S execve -C uid!=euid -F euid=0 -k setuid_exec
+-a always,exit -F arch={{ a }} -S execve -F euid=0 -F auid>={{ uid_min }} -F auid!=unset -k root_cmd
+{% endfor %}
+
+{% for line in auditd_extra_rules %}
+{{ line }}
+{% endfor %}

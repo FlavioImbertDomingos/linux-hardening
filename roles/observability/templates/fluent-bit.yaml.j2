@@ -1,0 +1,105 @@
+# {{ ansible_managed }}
+# Fluent Bit log pipeline — NIST AU-6 audit review, AU-4(1) off-host transfer.
+# journald + auditd + sudo logs -> loopback OTLP/HTTP -> otelcol-contrib -> gateway
+service:
+  flush: 5
+  daemon: off
+  log_level: info
+  storage.path: {{ observability_fluentbit_storage_dir }}
+  storage.sync: normal
+  storage.checksum: on
+  storage.backlog.mem_limit: {{ observability_fluentbit_mem_buf_limit }}
+  storage.max_chunks_up: 128
+  http_server: off
+
+parsers:
+  - name: auditd
+    format: regex
+    regex: '^type=(?<audit_type>\S+) msg=audit\((?<time>[0-9]+\.[0-9]+):(?<serial>[0-9]+)\):\s*(?<message>.*)$'
+    time_key: time
+    time_format: '%s.%L'
+    time_keep: on
+  - name: sudo_log
+    format: regex
+    regex: '^(?<time>[A-Z][a-z]{2}\s+[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2}) : (?<user>[^ ]+) : (?<message>.*)$'
+    time_key: time
+    time_format: '%b %d %H:%M:%S'
+
+pipeline:
+  inputs:
+    - name: systemd
+      tag: host.journal
+      read_from_tail: on
+      db: /var/lib/fluent-bit/journal.db
+      db.sync: normal
+      strip_underscores: on
+      lowercase: on
+      mem_buf_limit: {{ observability_fluentbit_mem_buf_limit }}
+      storage.type: filesystem
+
+{% if observability_fluentbit_ship_audit_log | bool %}
+    - name: tail
+      tag: host.audit
+      path: /var/log/audit/audit.log
+      parser: auditd
+      db: /var/lib/fluent-bit/audit.db
+      db.sync: normal
+      read_from_head: false
+      skip_long_lines: on
+      buffer_max_size: 256k
+      mem_buf_limit: {{ observability_fluentbit_mem_buf_limit }}
+      storage.type: filesystem
+{% endif %}
+
+{% if observability_fluentbit_ship_sudo_log | bool %}
+    - name: tail
+      tag: host.sudo
+      path: {{ auth_sudo_logfile | default('/var/log/sudo.log') }}
+      parser: sudo_log
+      db: /var/lib/fluent-bit/sudo.db
+      read_from_head: false
+      skip_long_lines: on
+      storage.type: filesystem
+{% endif %}
+
+  filters:
+    # auditd's syslog plugin mirrors events into journald on local6 (facility 22);
+    # drop those from the journal stream so audit events are shipped once, from audit.log.
+{% if observability_fluentbit_ship_audit_log | bool %}
+    - name: grep
+      match: host.journal
+      exclude: syslog_facility ^22$
+{% endif %}
+    - name: modify
+      match: "*"
+      add:
+        - host.name ${HOSTNAME}
+        - image.name {{ image_name }}
+        - image.version {{ image_version }}
+        - hardening.profile {{ hardening_profile | default('nist-800-53-moderate') }}
+    - name: modify
+      match: host.audit
+      add:
+        - log.source auditd
+    - name: modify
+      match: host.sudo
+      add:
+        - log.source sudo
+    - name: modify
+      match: host.journal
+      add:
+        - log.source journald
+
+  outputs:
+    - name: opentelemetry
+      match: "*"
+      host: {{ observability_otel_local_otlp_http.split(':')[0] }}
+      port: {{ observability_otel_local_otlp_http.split(':')[1] }}
+      logs_uri: /v1/logs
+      tls: off
+      log_response_payload: false
+      logs_body_key: message
+      logs_severity_text_message_key: priority
+      add_label: source fluent-bit
+      storage.total_limit_size: 512M
+      retry_limit: false

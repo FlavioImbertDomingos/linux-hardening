@@ -1,0 +1,9 @@
+Name: Notify on failed login attempts (NIST AC-7)
+Default: yes
+Priority: 1024
+Auth-Type: Primary
+Auth:
+	requisite	pam_faillock.so preauth
+Account-Type: Primary
+Account:
+	required	pam_faillock.so

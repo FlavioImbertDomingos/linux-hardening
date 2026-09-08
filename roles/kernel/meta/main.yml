@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: PulseAI Systems
+  description: Kernel self-protection, module denylist, boot cmdline, crypto policy
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["8", "9"]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies: []

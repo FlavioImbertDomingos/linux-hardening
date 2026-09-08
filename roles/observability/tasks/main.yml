@@ -1,0 +1,26 @@
+---
+- name: Compute architecture label
+  ansible.builtin.set_fact:
+    observability_arch: "{{ observability_arch_map[ansible_architecture] | default(ansible_architecture) }}"
+  tags: [always]
+
+- name: Ensure staging directory exists
+  ansible.builtin.file:
+    path: "{{ observability_staging_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [always]
+
+- name: Install node_exporter
+  ansible.builtin.include_tasks: node_exporter.yml
+  tags: [nist_SI-4, node_exporter]
+
+- name: Install OpenTelemetry Collector
+  ansible.builtin.include_tasks: otelcol.yml
+  tags: [nist_SI-4, nist_AU-6, otelcol]
+
+- name: Install Fluent Bit
+  ansible.builtin.include_tasks: fluentbit.yml
+  tags: [nist_AU-6, nist_AU-4, fluentbit]

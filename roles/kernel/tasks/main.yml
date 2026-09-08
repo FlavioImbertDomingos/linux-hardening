@@ -1,0 +1,189 @@
+---
+- name: Compose effective settings
+  ansible.builtin.set_fact:
+    kernel_sysctl_effective: >-
+      {{ kernel_sysctl | combine(kernel_sysctl_extra)
+         | dict2items | rejectattr('key', 'match', '^net.ipv6')
+         | list | items2dict
+         if kernel_disable_ipv6 | bool
+         else kernel_sysctl | combine(kernel_sysctl_extra) }}
+    kernel_modules_effective: "{{ (kernel_module_denylist + kernel_module_denylist_extra) | unique }}"
+    kernel_cmdline_effective: >-
+      {{ (kernel_cmdline_args
+          + kernel_cmdline_args_extra
+          + (kernel_cmdline_args_baremetal if ansible_virtualization_role | default('guest') != 'guest' else [])
+          + (['module.sig_enforce=1'] if kernel_module_sig_enforce | bool else [])
+          + (['ipv6.disable=1'] if kernel_disable_ipv6 | bool else [])
+          + (['nosmt'] if kernel_disable_smt | bool else [])) | unique }}
+  tags: [always]
+
+- name: Ensure directories for drop-ins exist
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [always]
+
+# --------------------------------------------------------------------------
+# sysctl  (SC-39, SI-16, SC-5, SC-7)
+# --------------------------------------------------------------------------
+- name: Remove distro sysctl files that would override ours
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/sysctl.d/10-network-security.conf   # Ubuntu ships rp_filter=2
+    - /etc/sysctl.d/10-ptrace.conf
+    - /etc/sysctl.d/10-kernel-hardening.conf
+  tags: [nist_SC-39, nist_SI-16]
+
+- name: Write hardened sysctl configuration
+  ansible.builtin.template:
+    src: 99-hardening.conf.j2
+    dest: /etc/sysctl.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload sysctl
+  tags: [nist_SC-39, nist_SI-16, nist_SC-5, nist_SC-7]
+
+# --------------------------------------------------------------------------
+# kernel modules  (CM-7, SC-41)
+# --------------------------------------------------------------------------
+- name: Denylist unnecessary kernel modules
+  ansible.builtin.template:
+    src: modprobe-hardening.conf.j2
+    dest: /etc/modprobe.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild initramfs
+  tags: [nist_CM-7, nist_SC-41]
+
+- name: Unload denylisted modules that are currently loaded
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ kernel_modules_effective }}"
+  failed_when: false
+  when: not hardening_is_container | bool
+  tags: [nist_CM-7]
+
+# --------------------------------------------------------------------------
+# boot loader / kernel command line  (SI-16, AU-12, SC-39, CM-6)
+# --------------------------------------------------------------------------
+- name: Apply kernel command line (RHEL, via grubby)
+  ansible.builtin.command:
+    cmd: "grubby --update-kernel=ALL --args='{{ kernel_cmdline_effective | join(' ') }}'"
+  changed_when: true
+  when:
+    - ansible_os_family == 'RedHat'
+    - not hardening_is_container | bool
+  tags: [nist_SI-16, nist_AU-12, nist_SC-39]
+
+- name: Apply kernel command line (Ubuntu, via grub.d drop-in)
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/99-hardening.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT {{ kernel_cmdline_effective | join(' ') }} apparmor=1 security=apparmor"
+  notify: Update grub
+  when: ansible_os_family == 'Debian'
+  tags: [nist_SI-16, nist_AU-12, nist_SC-39]
+
+- name: Protect boot loader configuration (AC-6)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - /etc/default/grub
+  failed_when: false
+  tags: [nist_AC-6]
+
+- name: Find grub.cfg files
+  ansible.builtin.find:
+    paths: [/boot/grub2, /boot/grub, /boot/efi/EFI]
+    patterns: "grub.cfg,grubenv,user.cfg"
+    recurse: true
+  register: kernel_grub_files
+  tags: [nist_AC-6]
+
+- name: Restrict grub.cfg permissions (skipped on vfat EFI partitions)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ kernel_grub_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: not item.path.startswith('/boot/efi')
+  tags: [nist_AC-6]
+
+- name: Report Secure Boot state (informational, SI-7)
+  ansible.builtin.command: mokutil --sb-state
+  register: kernel_sb_state
+  changed_when: false
+  failed_when: false
+  when: not hardening_is_container | bool
+  tags: [nist_SI-7]
+
+- name: Log Secure Boot state
+  ansible.builtin.debug:
+    msg: "Secure Boot: {{ kernel_sb_state.stdout | default('unknown (no EFI / mokutil)') }}"
+  when: not hardening_is_container | bool
+  tags: [nist_SI-7]
+
+# --------------------------------------------------------------------------
+# core dumps  (SI-16, SC-28)
+# --------------------------------------------------------------------------
+- name: Disable systemd-coredump storage
+  ansible.builtin.copy:
+    dest: /etc/systemd/coredump.conf.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+  when: kernel_disable_coredumps | bool
+  tags: [nist_SI-16, nist_SC-28]
+
+- name: Disable core dumps via limits
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/99-coredump.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      * hard core 0
+      * soft core 0
+  when: kernel_disable_coredumps | bool
+  tags: [nist_SI-16]
+
+- name: Disable ctrl-alt-del burst action
+  community.general.ini_file:
+    path: /etc/systemd/system.conf
+    section: Manager
+    option: CtrlAltDelBurstAction
+    value: none
+    owner: root
+    group: root
+    mode: "0644"
+    no_extra_spaces: true
+  tags: [nist_AC-6]
+
+# --------------------------------------------------------------------------
+# crypto policy / FIPS  (SC-13)
+# --------------------------------------------------------------------------
+- name: Include crypto tasks
+  ansible.builtin.include_tasks: "crypto_{{ ansible_os_family }}.yml"
+  tags: [nist_SC-13]

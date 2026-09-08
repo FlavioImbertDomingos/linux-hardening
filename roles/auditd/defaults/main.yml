@@ -1,0 +1,40 @@
+---
+# ---- auditd.conf (AU-4 storage capacity, AU-5 failure response, AU-9 protection) ----
+auditd_log_file: /var/log/audit/audit.log
+auditd_log_format: ENRICHED
+auditd_max_log_file_mb: 50
+auditd_num_logs: 10
+auditd_max_log_file_action: ROTATE        # ROTATE|KEEP_LOGS
+auditd_space_left_mb: 500
+auditd_space_left_action: SYSLOG          # AU-5(1) warn
+auditd_admin_space_left_mb: 100
+auditd_admin_space_left_action: SUSPEND   # AU-5: HALT for high-impact systems
+auditd_disk_full_action: SUSPEND
+auditd_disk_error_action: SYSLOG
+auditd_flush: INCREMENTAL_ASYNC
+auditd_freq: 50
+auditd_action_mail_acct: root
+auditd_name_format: HOSTNAME
+
+# ---- rule behaviour ----
+auditd_buffer_size: 8192
+auditd_failure_mode: 1     # 0 silent, 1 printk, 2 panic (STIG/high uses 2)
+auditd_backlog_wait_time: 60000
+# -e 2 makes the rule set immutable until reboot (AU-9). Images are sealed, so 2.
+auditd_enabled_flag: 2
+# Log every execve by real users (AU-12 "all executions"). Very verbose; off by default.
+auditd_log_all_execve: false
+# UID threshold for "real user" (matches login.defs UID_MIN)
+auditd_uid_min: 1000
+
+# ---- remote audit log shipping via audisp-remote (AU-4(1), AU-9(2)) ----
+auditd_remote_server: ""
+auditd_remote_port: 60
+auditd_remote_transport: tcp   # tcp|krb5
+
+# ---- syslog plugin: mirror audit events into journald/rsyslog so Fluent Bit
+# and the OTel journald receiver see them without tailing audit.log (AU-6(4)).
+auditd_syslog_plugin: true
+
+# Extra custom rule lines appended verbatim.
+auditd_extra_rules: []

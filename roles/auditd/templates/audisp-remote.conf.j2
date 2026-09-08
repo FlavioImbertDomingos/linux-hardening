@@ -1,0 +1,21 @@
+# {{ ansible_managed }} — NIST AU-4(1) transfer to alternate storage, AU-9(2)
+remote_server = {{ auditd_remote_server }}
+port = {{ auditd_remote_port }}
+transport = {{ auditd_remote_transport }}
+mode = immediate
+queue_depth = 10240
+format = managed
+network_retry_time = 1
+max_tries_per_record = 3
+max_time_per_record = 5
+heartbeat_timeout = 30
+network_failure_action = syslog
+disk_low_action = syslog
+disk_full_action = syslog
+disk_error_action = syslog
+remote_ending_action = reconnect
+generic_error_action = syslog
+generic_warning_action = syslog
+queue_error_action = syslog
+overflow_action = syslog
+enable_krb5 = {{ 'yes' if auditd_remote_transport == 'krb5' else 'no' }}

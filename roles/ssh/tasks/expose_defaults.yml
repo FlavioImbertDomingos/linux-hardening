@@ -1,0 +1,5 @@
+---
+# Intentionally empty: imported by playbooks/verify.yml so this role's
+# defaults are in scope for the verification assertions.
+- name: Expose ssh role defaults to the verify play
+  ansible.builtin.meta: noop

@@ -1,0 +1,85 @@
+---
+# =============================================================================
+# Build a NIST SP 800-53 Rev.5 (Moderate) hardened base image.
+#
+#   ansible-playbook playbooks/harden-image.yml -l rhel9-image
+#
+# Flow:  preflight -> OS hardening roles -> reboot -> verify -> SBOM + scan
+#        -> compliance scan -> finalise (seal image)
+# Every task is tagged with the NIST control family/ID it implements
+# (e.g. nist_AC-17, nist_AU-12) so you can run or audit a single control:
+#   ansible-playbook playbooks/harden-image.yml --tags nist_AU-12
+# =============================================================================
+
+- name: Preflight
+  hosts: image_builders
+  gather_facts: true
+  tags: [always]
+  tasks:
+    - name: Assert supported operating system
+      ansible.builtin.assert:
+        that:
+          - (ansible_os_family == 'RedHat' and ansible_distribution_major_version in ['8', '9'])
+            or (ansible_distribution == 'Ubuntu' and ansible_distribution_version in ['22.04', '24.04'])
+        fail_msg: >-
+          Unsupported OS {{ ansible_distribution }} {{ ansible_distribution_version }}.
+          Supported: RHEL/Rocky/Alma 8-9, Ubuntu 22.04/24.04.
+
+    - name: Detect container build environment
+      ansible.builtin.set_fact:
+        hardening_is_container: >-
+          {{ hardening_is_container | default(false) | bool
+             or (ansible_virtualization_type | default('') in ['docker', 'podman', 'container', 'lxc'])
+             and ansible_virtualization_role | default('') == 'guest' }}
+
+    - name: Print build context
+      ansible.builtin.debug:
+        msg: >-
+          Building {{ image_name }} v{{ image_version }} on {{ ansible_distribution }}
+          {{ ansible_distribution_version }} ({{ ansible_architecture }}),
+          container={{ hardening_is_container }}, profile={{ hardening_profile }}
+
+- name: Harden operating system
+  hosts: image_builders
+  gather_facts: true
+  roles:
+    - { role: baseline, tags: [baseline] }
+    - { role: kernel, tags: [kernel] }
+    - { role: mac, tags: [mac] }
+    - { role: filesystem, tags: [filesystem] }
+    - { role: auth, tags: [auth] }
+    - { role: ssh, tags: [ssh] }
+    - { role: firewall, tags: [firewall] }
+    - { role: auditd, tags: [auditd] }
+    - { role: logging, tags: [logging] }
+    - { role: aide, tags: [aide] }
+    - { role: observability, tags: [observability] }
+
+- name: Reboot so kernel, MAC and mount changes are live
+  hosts: image_builders
+  gather_facts: false
+  tags: [reboot]
+  tasks:
+    - name: Reboot build host
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 15
+      when:
+        - hardening_reboot | bool
+        - not hardening_is_container | bool
+
+- name: Verify hardening
+  ansible.builtin.import_playbook: verify.yml
+
+- name: Software bill of materials, vulnerability gate and compliance scan
+  hosts: image_builders
+  gather_facts: true
+  roles:
+    - { role: sbom, tags: [sbom] }
+    - { role: compliance, tags: [compliance] }
+
+- name: Finalise image
+  hosts: image_builders
+  gather_facts: true
+  roles:
+    - { role: finalize, tags: [finalize] }

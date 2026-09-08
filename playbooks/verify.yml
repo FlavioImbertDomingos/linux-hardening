@@ -1,0 +1,277 @@
+---
+# =============================================================================
+# Post-hardening verification. Fails the build if any control did not land.
+# Runs automatically inside harden-image.yml; can also be run standalone
+# against an existing instance to check for drift:
+#   ansible-playbook playbooks/verify.yml -l <host>
+# =============================================================================
+- name: Verify hardened state
+  hosts: image_builders
+  gather_facts: true
+  tags: [verify]
+  # Pull the role defaults (ssh_*, kernel_*, auditd_*) into play scope so the
+  # expectations below track whatever the roles were configured with.
+  pre_tasks:
+    - name: Expose kernel role defaults
+      ansible.builtin.import_role:
+        name: kernel
+        tasks_from: expose_defaults
+    - name: Expose ssh role defaults
+      ansible.builtin.import_role:
+        name: ssh
+        tasks_from: expose_defaults
+    - name: Expose auditd role defaults
+      ansible.builtin.import_role:
+        name: auditd
+        tasks_from: expose_defaults
+  vars:
+    verify_expected_sshd:
+      permitrootlogin: "no"
+      passwordauthentication: "{{ ssh_password_authentication | default('no') }}"
+      permitemptypasswords: "no"
+      x11forwarding: "no"
+      maxauthtries: "{{ ssh_max_auth_tries | default(3) }}"
+      loglevel: "VERBOSE"
+      usepam: "yes"
+      permituserenvironment: "no"
+      hostbasedauthentication: "no"
+      ignorerhosts: "yes"
+    verify_expected_sysctl:
+      kernel.kptr_restrict: "2"
+      kernel.dmesg_restrict: "1"
+      kernel.randomize_va_space: "2"
+      kernel.yama.ptrace_scope: "{{ kernel_ptrace_scope | default(1) }}"
+      kernel.unprivileged_bpf_disabled: "1"
+      kernel.kexec_load_disabled: "1"
+      kernel.sysrq: "0"
+      fs.protected_symlinks: "1"
+      fs.protected_hardlinks: "1"
+      fs.suid_dumpable: "0"
+      net.ipv4.conf.all.accept_redirects: "0"
+      net.ipv4.conf.all.send_redirects: "0"
+      net.ipv4.conf.all.rp_filter: "1"
+      net.ipv4.tcp_syncookies: "1"
+      net.ipv4.ip_forward: "{{ kernel_ip_forward | default(0) }}"
+  tasks:
+    # --- SSH (AC-17, IA-2, SC-8) ---------------------------------------------
+    - name: Read effective sshd configuration
+      ansible.builtin.command: sshd -T
+      register: verify_sshd
+      changed_when: false
+
+    - name: Parse sshd -T output
+      ansible.builtin.set_fact:
+        verify_sshd_map: >-
+          {{ dict(verify_sshd.stdout_lines
+                  | map('regex_replace', '^([^ ]+) +(.*)$', '\1=\2')
+                  | map('split', '=', 1)) }}
+
+    - name: Assert sshd settings
+      ansible.builtin.assert:
+        that: verify_sshd_map[item.key] | lower == item.value | string | lower
+        fail_msg: "sshd {{ item.key }} is '{{ verify_sshd_map[item.key] | default('unset') }}', expected '{{ item.value }}'"
+        quiet: true
+      loop: "{{ verify_expected_sshd | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Assert no weak SSH host keys remain
+      ansible.builtin.find:
+        paths: /etc/ssh
+        patterns: "ssh_host_dsa_key,ssh_host_ecdsa_key"
+      register: verify_weak_hostkeys
+      failed_when: verify_weak_hostkeys.matched > 0
+
+    # --- Kernel (SC-39, SI-16, CM-7) ----------------------------------------
+    - name: Read sysctl values
+      ansible.builtin.command: "sysctl -n {{ item.key }}"
+      register: verify_sysctl
+      changed_when: false
+      failed_when: false
+      loop: "{{ verify_expected_sysctl | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when: not hardening_is_container | bool
+
+    - name: Assert sysctl values
+      ansible.builtin.assert:
+        that: item.stdout | trim == item.item.value | string
+        fail_msg: "{{ item.item.key }} = {{ item.stdout }}, expected {{ item.item.value }}"
+        quiet: true
+      loop: "{{ verify_sysctl.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      when: not hardening_is_container | bool
+
+    - name: Read kernel command line
+      ansible.builtin.slurp:
+        src: /proc/cmdline
+      register: verify_cmdline
+      when: not hardening_is_container | bool
+
+    - name: Assert kernel command line hardening flags are live
+      ansible.builtin.assert:
+        that: item in (verify_cmdline.content | b64decode)
+        fail_msg: "Kernel cmdline missing '{{ item }}' (did the host reboot?)"
+        quiet: true
+      loop: "{{ kernel_cmdline_args | default(['audit=1', 'init_on_alloc=1', 'slab_nomerge']) }}"
+      when: not hardening_is_container | bool
+
+    - name: Read denylisted kernel modules
+      ansible.builtin.command: "modprobe -n -v {{ item }}"
+      register: verify_modprobe
+      changed_when: false
+      failed_when: false
+      loop: "{{ kernel_module_denylist | default(['cramfs', 'usb-storage', 'dccp', 'sctp']) }}"
+      when: not hardening_is_container | bool
+
+    - name: Assert modules are denylisted
+      ansible.builtin.assert:
+        that: "'install /bin/false' in item.stdout or 'install /bin/true' in item.stdout or item.rc != 0"
+        fail_msg: "Module {{ item.item }} is loadable"
+        quiet: true
+      loop: "{{ verify_modprobe.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: not hardening_is_container | bool
+
+    # --- Mandatory access control (AC-3, AC-6) ---------------------------------
+    - name: Check SELinux mode
+      ansible.builtin.command: getenforce
+      register: verify_selinux
+      changed_when: false
+      when: ansible_os_family == 'RedHat' and not hardening_is_container | bool
+      failed_when: verify_selinux.stdout != 'Enforcing'
+
+    - name: Check AppArmor profiles
+      ansible.builtin.command: aa-status --json
+      register: verify_apparmor
+      changed_when: false
+      when: ansible_os_family == 'Debian' and not hardening_is_container | bool
+
+    - name: Assert AppArmor is enforcing with no complain-mode profiles
+      ansible.builtin.assert:
+        that:
+          - (verify_apparmor.stdout | from_json).profiles | dict2items | selectattr('value', 'equalto', 'complain') | list | length == 0
+          - (verify_apparmor.stdout | from_json).profiles | length > 0
+        fail_msg: "AppArmor has profiles in complain mode or no profiles loaded"
+      when: ansible_os_family == 'Debian' and not hardening_is_container | bool
+
+    # --- Accounts (AC-2, IA-5) -------------------------------------------------
+    - name: Read passwd and shadow
+      ansible.builtin.command: "awk -F: '$3 == 0 {print $1}' /etc/passwd"
+      register: verify_uid0
+      changed_when: false
+      failed_when: verify_uid0.stdout_lines != ['root']
+
+    - name: Assert no empty password hashes
+      ansible.builtin.command: "awk -F: '($2 == \"\") {print $1}' /etc/shadow"
+      register: verify_empty_pw
+      changed_when: false
+      failed_when: verify_empty_pw.stdout | length > 0
+
+    - name: Assert root password is locked (image must not ship a usable root password)
+      ansible.builtin.command: passwd -S root
+      register: verify_root_pw
+      changed_when: false
+      failed_when: verify_root_pw.stdout.split()[1] not in ['L', 'LK', 'NP']
+
+    # --- Audit (AU-2, AU-12) ----------------------------------------------------
+    - name: Check auditd rules are loaded
+      ansible.builtin.command: auditctl -l
+      register: verify_auditctl
+      changed_when: false
+      failed_when: verify_auditctl.stdout_lines | length < 40
+      when: not hardening_is_container | bool
+
+    - name: Check audit enabled flag
+      ansible.builtin.command: auditctl -s
+      register: verify_audit_status
+      changed_when: false
+      failed_when: "'enabled ' + (auditd_enabled_flag | default(2) | string) not in verify_audit_status.stdout"
+      when: not hardening_is_container | bool
+
+    # --- Services (AU-4, SI-4, SC-7) -------------------------------------------
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Assert security services are enabled
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services[item] is defined
+          - ansible_facts.services[item].status in ['enabled', 'static', 'running']
+        fail_msg: "Service {{ item }} is not enabled"
+        quiet: true
+      loop:
+        - auditd.service
+        - rsyslog.service
+        - "{{ 'chronyd.service' if ansible_os_family == 'RedHat' else 'chrony.service' }}"
+        - node_exporter.service
+        - otelcol-contrib.service
+        - fluent-bit.service
+        - "{{ 'firewalld.service' if ansible_os_family == 'RedHat' else 'nftables.service' }}"
+      when: not hardening_is_container | bool
+
+    - name: Assert AIDE timer is enabled (service_facts does not list timers)
+      ansible.builtin.command: systemctl is-enabled aide-check.timer # noqa command-instead-of-module — systemd module cannot query timers
+      register: verify_aide_timer
+      changed_when: false
+      failed_when: verify_aide_timer.stdout | trim != 'enabled'
+      when: not hardening_is_container | bool
+
+    - name: Assert forbidden services are absent or disabled
+      ansible.builtin.assert:
+        that: ansible_facts.services[item] is not defined or ansible_facts.services[item].status in ['disabled', 'masked', 'not-found', 'inactive']
+        fail_msg: "Service {{ item }} must not be enabled on a base image"
+        quiet: true
+      loop:
+        - avahi-daemon.service
+        - cups.service
+        - rpcbind.service
+        - telnet.socket
+        - bluetooth.service
+        - xinetd.service
+
+    # --- File permissions (AC-6) --------------------------------------------------
+    - name: Find world-writable files outside /proc /sys /tmp
+      ansible.builtin.command: >-
+        find / -xdev \( -path /proc -o -path /sys -o -path /tmp -o -path /var/tmp -o -path /dev \) -prune
+        -o -type f -perm -0002 -print
+      register: verify_ww
+      changed_when: false
+      failed_when: verify_ww.stdout | length > 0
+
+    - name: Find unowned files
+      ansible.builtin.command: >-
+        find / -xdev \( -path /proc -o -path /sys \) -prune -o \( -nouser -o -nogroup \) -print
+      register: verify_unowned
+      changed_when: false
+      failed_when: verify_unowned.stdout | length > 0
+
+    - name: Check sensitive file modes
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      register: verify_stat
+      loop:
+        - { path: /etc/shadow, max: "0640" }
+        - { path: /etc/gshadow, max: "0640" }
+        - { path: /etc/passwd, max: "0644" }
+        - { path: /etc/group, max: "0644" }
+        - { path: /etc/ssh/sshd_config, max: "0600" }
+        - { path: /etc/crontab, max: "0600" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Assert sensitive file modes
+      ansible.builtin.assert:
+        that: (item.stat.mode | int(base=8)) <= (item.item.max | int(base=8))
+        fail_msg: "{{ item.item.path }} mode {{ item.stat.mode }} exceeds {{ item.item.max }}"
+        quiet: true
+      loop: "{{ verify_stat.results }}"
+      loop_control:
+        label: "{{ item.item.path }}"
+      when: item.stat.exists
+
+    - name: Verification summary
+      ansible.builtin.debug:
+        msg: "All hardening assertions passed on {{ inventory_hostname }}"

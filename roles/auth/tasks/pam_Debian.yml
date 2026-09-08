@@ -1,0 +1,27 @@
+---
+# Ubuntu manages PAM through pam-auth-update profiles in /usr/share/pam-configs.
+# Shipping our own profiles keeps the stack idempotent and survives package upgrades.
+- name: Install pam-auth-update profiles for faillock and pwhistory
+  ansible.builtin.copy:
+    src: "pam-configs/{{ item }}"
+    dest: "/usr/share/pam-configs/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - faillock
+    - faillock_notify
+  register: auth_pam_profiles
+
+- name: Install pam-auth-update profile for pwhistory
+  ansible.builtin.template:
+    src: pam-pwhistory.j2
+    dest: /usr/share/pam-configs/pwhistory
+    owner: root
+    group: root
+    mode: "0644"
+  register: auth_pam_pwhistory
+
+- name: Enable PAM profiles
+  ansible.builtin.command: pam-auth-update --package --enable faillock --enable faillock_notify --enable pwhistory --enable pwquality
+  changed_when: auth_pam_profiles is changed or auth_pam_pwhistory is changed

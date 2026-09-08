@@ -1,0 +1,115 @@
+---
+# Produce a signed manifest so anyone holding the image can prove which SBOM
+# and scan report belong to it. (SR-4(4) provenance, SI-7(15) code authentication)
+- name: Hash every artefact
+  ansible.builtin.shell: |
+    set -o pipefail
+    cd {{ sbom_dir }}
+    sha256sum {{ sbom_basename }}.*.json {{ sbom_basename }}.vulns.txt {{ sbom_basename }}.vulns.sarif grype.yaml
+  args:
+    executable: /bin/bash
+  register: sbom_hashes
+  changed_when: false
+
+- name: Write SBOM manifest
+  ansible.builtin.template:
+    src: manifest.json.j2
+    dest: "{{ sbom_dir }}/{{ sbom_basename }}.manifest.json"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Compute SBOM digest for /etc/image-release
+  ansible.builtin.command: "sha256sum {{ sbom_dir }}/{{ sbom_basename }}.spdx-json.json"
+  register: sbom_spdx_digest
+  changed_when: false
+
+- name: Set signing mode
+  ansible.builtin.set_fact:
+    sbom_sign_mode: "{{ 'key' if sbom_cosign_key | length > 0 else ('keyless' if sbom_cosign_keyless | bool else 'none') }}"
+    sbom_spdx_sha256: "{{ sbom_spdx_digest.stdout.split()[0] }}"
+
+- name: Copy cosign private key from the controller (never persisted in the image)
+  ansible.builtin.copy:
+    src: "{{ sbom_cosign_key }}"
+    dest: "{{ sbom_staging_dir }}/cosign.key"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when:
+    - sbom_sign_mode == 'key'
+    - not sbom_cosign_key.startswith('env://')
+    - '"://" not in sbom_cosign_key'
+
+- name: Sign manifest and SBOMs with a key (SR-4(4))
+  ansible.builtin.command: >-
+    /usr/local/bin/cosign sign-blob --yes
+    --key {{ sbom_staging_dir + '/cosign.key' if not sbom_cosign_key.startswith('env://') and '://' not in sbom_cosign_key else sbom_cosign_key }}
+    {{ '' if sbom_rekor_upload | bool else '--tlog-upload=false' }}
+    --output-signature {{ sbom_dir }}/{{ item }}.sig
+    --bundle {{ sbom_dir }}/{{ item }}.bundle
+    {{ sbom_dir }}/{{ item }}
+  environment:
+    COSIGN_PASSWORD: "{{ sbom_cosign_password }}"
+    COSIGN_KEY: "{{ lookup('env', 'COSIGN_KEY') | default('', true) }}"
+  loop:
+    - "{{ sbom_basename }}.manifest.json"
+    - "{{ sbom_basename }}.spdx-json.json"
+    - "{{ sbom_basename }}.cyclonedx-json.json"
+  no_log: true
+  changed_when: true
+  when: sbom_sign_mode == 'key'
+
+- name: Sign manifest and SBOMs keyless via Sigstore (SR-4(4))
+  ansible.builtin.command: >-
+    /usr/local/bin/cosign sign-blob --yes
+    --output-signature {{ sbom_dir }}/{{ item }}.sig
+    --output-certificate {{ sbom_dir }}/{{ item }}.pem
+    --bundle {{ sbom_dir }}/{{ item }}.bundle
+    {{ sbom_dir }}/{{ item }}
+  environment:
+    SIGSTORE_ID_TOKEN: "{{ lookup('env', 'SIGSTORE_ID_TOKEN') | default('', true) }}"
+  loop:
+    - "{{ sbom_basename }}.manifest.json"
+    - "{{ sbom_basename }}.spdx-json.json"
+    - "{{ sbom_basename }}.cyclonedx-json.json"
+  no_log: true
+  changed_when: true
+  when: sbom_sign_mode == 'keyless'
+
+- name: Create in-toto SPDX attestation bundle
+  ansible.builtin.command: >-
+    /usr/local/bin/cosign attest-blob --yes
+    --type spdxjson
+    --predicate {{ sbom_dir }}/{{ sbom_basename }}.spdx-json.json
+    {{ '--key ' + (sbom_staging_dir + '/cosign.key' if not sbom_cosign_key.startswith('env://') and '://' not in sbom_cosign_key else sbom_cosign_key) if sbom_sign_mode == 'key' else '' }}
+    {{ '' if sbom_rekor_upload | bool else '--tlog-upload=false' }}
+    --bundle {{ sbom_dir }}/{{ sbom_basename }}.spdx.attestation.bundle
+    {{ sbom_dir }}/{{ sbom_basename }}.manifest.json
+  environment:
+    COSIGN_PASSWORD: "{{ sbom_cosign_password }}"
+    COSIGN_KEY: "{{ lookup('env', 'COSIGN_KEY') | default('', true) }}"
+    SIGSTORE_ID_TOKEN: "{{ lookup('env', 'SIGSTORE_ID_TOKEN') | default('', true) }}"
+  no_log: true
+  changed_when: true
+  when: sbom_sign_mode != 'none'
+
+- name: Remove private key material from the build host
+  ansible.builtin.file:
+    path: "{{ sbom_staging_dir }}/cosign.key"
+    state: absent
+
+- name: Warn when artefacts are unsigned
+  ansible.builtin.debug:
+    msg: "WARNING: SBOM artefacts are NOT signed (set sbom_cosign_key or sbom_cosign_keyless=true)."
+  when: sbom_sign_mode == 'none'
+
+- name: Restrict SBOM directory permissions (AU-9)
+  ansible.builtin.file:
+    path: "{{ sbom_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+    recurse: true

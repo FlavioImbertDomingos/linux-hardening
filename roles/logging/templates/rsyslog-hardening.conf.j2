@@ -1,0 +1,38 @@
+# {{ ansible_managed }} — NIST AU-4(1), AU-9 protection of audit information
+# File creation defaults: no world access to logs
+$FileCreateMode {{ logging_rsyslog_file_mode }}
+$DirCreateMode {{ logging_rsyslog_dir_mode }}
+$Umask 0027
+
+# Precise timestamps (AU-8)
+$ActionFileDefaultTemplate RSYSLOG_FileFormat
+
+# auditd syslog plugin arrives on local6; keep a dedicated copy
+local6.*    /var/log/audit-syslog.log
+
+{% if logging_remote_host | length > 0 %}
+# --- Off-host syslog over TLS (RFC 5425) — AU-4(1), AU-9(2), SC-8 ---
+global(
+  DefaultNetstreamDriver="gtls"
+{% if logging_remote_ca_file | length > 0 %}
+  DefaultNetstreamDriverCAFile="{{ logging_remote_ca_file }}"
+{% endif %}
+)
+action(
+  type="omfwd"
+  target="{{ logging_remote_host }}"
+  port="{{ logging_remote_port }}"
+  protocol="tcp"
+  StreamDriver="gtls"
+  StreamDriverMode="1"
+  StreamDriverAuthMode="x509/name"
+  StreamDriverPermittedPeers="{{ logging_remote_host }}"
+  queue.type="LinkedList"
+  queue.filename="fwd_remote"
+  queue.saveOnShutdown="on"
+  queue.size="{{ logging_remote_queue_size }}"
+  queue.maxDiskSpace="1g"
+  action.resumeRetryCount="-1"
+  action.resumeInterval="30"
+)
+{% endif %}

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# NIST CM-7 / SC-41: prevent loading of unneeded kernel modules.
+# "install <mod> /bin/false" blocks explicit and auto-loading;
+# "blacklist" blocks alias-based loading.
+{% for mod in kernel_modules_effective %}
+install {{ mod }} /bin/false
+blacklist {{ mod }}
+{% endfor %}

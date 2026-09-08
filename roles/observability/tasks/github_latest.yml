@@ -1,0 +1,18 @@
+---
+# Resolve the newest release tag of a GitHub repo into observability_gh_version.
+# Caller sets observability_gh_repo (e.g. open-telemetry/opentelemetry-collector-releases).
+- name: "Query latest release of {{ observability_gh_repo }}"
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ observability_gh_repo }}/releases/latest"
+    headers: >-
+      {{ {'Accept': 'application/vnd.github+json'}
+         | combine({'Authorization': 'Bearer ' + observability_github_token} if observability_github_token | length > 0 else {}) }}
+    return_content: true
+  register: observability_gh_release
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: "Set version fact for {{ observability_gh_repo }}"
+  ansible.builtin.set_fact:
+    observability_gh_version: "{{ observability_gh_release.json.tag_name | regex_replace('^v', '') }}"

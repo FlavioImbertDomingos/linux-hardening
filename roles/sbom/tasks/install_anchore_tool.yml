@@ -1,0 +1,51 @@
+---
+# Installs one Anchore tool (syft|grype) with sha256 + Sigstore verification.
+- name: "Download release files for {{ sbom_tool }}"
+  ansible.builtin.get_url:
+    url: "https://github.com/anchore/{{ sbom_tool }}/releases/download/v{{ sbom_tool_version }}/{{ item }}"
+    dest: "{{ sbom_staging_dir }}/{{ item }}"
+    headers: "{{ {'Authorization': 'Bearer ' + sbom_github_token} if sbom_github_token | length > 0 else omit }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - "{{ sbom_tool }}_{{ sbom_tool_version }}_linux_{{ sbom_arch }}.tar.gz"
+    - "{{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt"
+    - "{{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt.sig"
+    - "{{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt.pem"
+
+- name: "Verify Sigstore signature on checksums (SR-4, SI-7) for {{ sbom_tool }}"
+  ansible.builtin.command: >-
+    /usr/local/bin/cosign verify-blob
+    --certificate-identity-regexp '{{ sbom_tool_identity }}'
+    --certificate-oidc-issuer '{{ sbom_oidc_issuer }}'
+    --signature {{ sbom_staging_dir }}/{{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt.sig
+    --certificate {{ sbom_staging_dir }}/{{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt.pem
+    {{ sbom_staging_dir }}/{{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt
+  changed_when: false
+  when: sbom_verify_signatures | bool
+
+- name: "Verify tarball checksum for {{ sbom_tool }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    cd {{ sbom_staging_dir }}
+    grep " {{ sbom_tool }}_{{ sbom_tool_version }}_linux_{{ sbom_arch }}.tar.gz$" {{ sbom_tool }}_{{ sbom_tool_version }}_checksums.txt | sha256sum -c -
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "Unpack {{ sbom_tool }}"
+  ansible.builtin.unarchive:
+    src: "{{ sbom_staging_dir }}/{{ sbom_tool }}_{{ sbom_tool_version }}_linux_{{ sbom_arch }}.tar.gz"
+    dest: "{{ sbom_staging_dir }}"
+    remote_src: true
+    include: ["{{ sbom_tool }}"]
+
+- name: "Install {{ sbom_tool }}"
+  ansible.builtin.copy:
+    src: "{{ sbom_staging_dir }}/{{ sbom_tool }}"
+    dest: "/usr/local/bin/{{ sbom_tool }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"

@@ -1,0 +1,225 @@
+---
+# --------------------------------------------------------------------------
+# Mounts  (CM-7, AC-6, SC-28)
+# --------------------------------------------------------------------------
+- name: Mount /tmp as tmpfs with restrictive options
+  ansible.posix.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: "{{ filesystem_mount_options['/tmp'] }},size={{ filesystem_tmp_size }}"
+    state: present
+  when:
+    - filesystem_tmp_as_tmpfs | bool
+    - not hardening_is_container | bool
+  notify: Remount changed filesystems
+  tags: [nist_CM-7, nist_AC-6]
+
+- name: Harden /dev/shm
+  ansible.posix.mount:
+    path: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: "{{ filesystem_mount_options['/dev/shm'] }}"
+    state: present
+  when: not hardening_is_container | bool
+  notify: Remount changed filesystems
+  tags: [nist_CM-7]
+
+- name: Bind /var/tmp to /tmp so it inherits noexec
+  ansible.posix.mount:
+    path: /var/tmp
+    src: /tmp
+    fstype: none
+    opts: "bind,{{ filesystem_mount_options['/var/tmp'] }}"
+    state: present
+  when:
+    - not hardening_is_container | bool
+    - ansible_mounts | selectattr('mount', 'equalto', '/var/tmp') | list | length == 0
+  tags: [nist_CM-7]
+
+- name: Tighten options on existing separate partitions
+  ansible.posix.mount:
+    path: "{{ item.mount }}"
+    # keep UUID= sources so the image survives device renaming (virtio -> nvme)
+    src: "{{ 'UUID=' ~ item.uuid if item.uuid | default('N/A') != 'N/A' else item.device }}"
+    fstype: "{{ item.fstype }}"
+    opts: "{{ filesystem_mount_options[item.mount] }}"
+    state: present
+  loop: "{{ ansible_mounts | selectattr('mount', 'in', ['/home', '/var', '/var/log', '/var/log/audit', '/boot']) | list }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  when:
+    - not hardening_is_container | bool
+    - item.fstype not in ['vfat']
+  notify: Remount changed filesystems
+  tags: [nist_CM-7]
+
+- name: Hide other users' processes in /proc (optional)
+  ansible.posix.mount:
+    path: /proc
+    src: proc
+    fstype: proc
+    opts: "defaults,hidepid=2,gid=proc"
+    state: present
+  when:
+    - filesystem_proc_hidepid | bool
+    - not hardening_is_container | bool
+  tags: [nist_AC-6]
+
+# --------------------------------------------------------------------------
+# Permissions  (AC-3, AC-6)
+# --------------------------------------------------------------------------
+- name: Set ownership and mode on identity files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/passwd, group: root, mode: "0644" }
+    - { path: /etc/passwd-, group: root, mode: "0644" }
+    - { path: /etc/group, group: root, mode: "0644" }
+    - { path: /etc/group-, group: root, mode: "0644" }
+    - { path: /etc/shadow, group: "{{ 'shadow' if ansible_os_family == 'Debian' else 'root' }}", mode: "{{ '0640' if ansible_os_family == 'Debian' else '0000' }}" }
+    - { path: /etc/shadow-, group: "{{ 'shadow' if ansible_os_family == 'Debian' else 'root' }}", mode: "{{ '0640' if ansible_os_family == 'Debian' else '0000' }}" }
+    - { path: /etc/gshadow, group: "{{ 'shadow' if ansible_os_family == 'Debian' else 'root' }}", mode: "{{ '0640' if ansible_os_family == 'Debian' else '0000' }}" }
+    - { path: /etc/gshadow-, group: "{{ 'shadow' if ansible_os_family == 'Debian' else 'root' }}", mode: "{{ '0640' if ansible_os_family == 'Debian' else '0000' }}" }
+    - { path: /etc/security/opasswd, group: root, mode: "0600" }
+  loop_control:
+    label: "{{ item.path }}"
+  failed_when: false
+  tags: [nist_AC-3, nist_AC-6]
+
+- name: Restrict cron and at to root
+  ansible.builtin.copy:
+    content: "root\n"
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - /etc/cron.allow
+    - /etc/at.allow
+  when: filesystem_restrict_cron | bool
+  tags: [nist_AC-6]
+
+- name: Remove cron.deny/at.deny (allow-lists take precedence)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/cron.deny
+    - /etc/at.deny
+  when: filesystem_restrict_cron | bool
+  tags: [nist_AC-6]
+
+- name: Lock down cron directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ '0600' if item == '/etc/crontab' else '0700' }}"
+  loop:
+    - /etc/crontab
+    - /etc/cron.d
+    - /etc/cron.hourly
+    - /etc/cron.daily
+    - /etc/cron.weekly
+    - /etc/cron.monthly
+  failed_when: false
+  tags: [nist_AC-6]
+
+- name: Strip SUID/SGID from binaries not required with privilege
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "u-s,g-s"
+  loop: "{{ filesystem_strip_suid }}"
+  failed_when: false
+  tags: [nist_AC-6]
+
+- name: Find world-writable directories without sticky bit
+  ansible.builtin.command: >-
+    find / -xdev \( -path /proc -o -path /sys \) -prune -o -type d -perm -0002 ! -perm -1000 -print
+  register: filesystem_ww_dirs
+  changed_when: false
+  tags: [nist_AC-6]
+
+- name: Set sticky bit on world-writable directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "a+t"
+  loop: "{{ filesystem_ww_dirs.stdout_lines }}"
+  tags: [nist_AC-6]
+
+- name: Find world-writable files
+  ansible.builtin.command: >-
+    find / -xdev \( -path /proc -o -path /sys -o -path /tmp -o -path /var/tmp -o -path /dev \) -prune
+    -o -type f -perm -0002 -print
+  register: filesystem_ww_files
+  changed_when: false
+  tags: [nist_AC-6]
+
+- name: Remove world-write from files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "o-w"
+  loop: "{{ filesystem_ww_files.stdout_lines }}"
+  tags: [nist_AC-6]
+
+- name: Find unowned / ungrouped files
+  ansible.builtin.command: >-
+    find / -xdev \( -path /proc -o -path /sys \) -prune -o \( -nouser -o -nogroup \) -print
+  register: filesystem_unowned
+  changed_when: false
+  tags: [nist_AC-6]
+
+- name: Give unowned files to root
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+  loop: "{{ filesystem_unowned.stdout_lines }}"
+  tags: [nist_AC-6]
+
+- name: Restrict home directories
+  ansible.builtin.command: >-
+    find /home -mindepth 1 -maxdepth 1 -type d -exec chmod 0750 {} +
+  changed_when: true
+  tags: [nist_AC-6]
+
+# --------------------------------------------------------------------------
+# umask  (AC-6)
+# --------------------------------------------------------------------------
+- name: Set default umask for interactive shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/99-umask.sh
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }} — NIST AC-6
+      umask {{ filesystem_umask }}
+  tags: [nist_AC-6]
+
+- name: Set umask in login.defs and bashrc
+  ansible.builtin.lineinfile:
+    path: "{{ item.path }}"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - { path: /etc/login.defs, regexp: '^\s*UMASK\s+', line: "UMASK {{ filesystem_umask }}" }
+    - { path: /etc/bashrc, regexp: '^\s*umask\s+0?[0-9]{2}$', line: "umask {{ filesystem_umask }}" }
+    - { path: /etc/bash.bashrc, regexp: '^\s*umask\s+0?[0-9]{2}$', line: "umask {{ filesystem_umask }}" }
+  loop_control:
+    label: "{{ item.path }}"
+  failed_when: false
+  tags: [nist_AC-6]
+
+- name: Disable prelink and automounting
+  ansible.builtin.systemd:
+    name: autofs
+    enabled: false
+    masked: true
+  failed_when: false
+  tags: [nist_CM-7]

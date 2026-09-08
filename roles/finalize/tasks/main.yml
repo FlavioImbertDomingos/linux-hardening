@@ -1,0 +1,271 @@
+---
+- name: Skip finalisation when disabled
+  ansible.builtin.meta: end_play
+  when: not finalize_enabled | bool
+
+# --------------------------------------------------------------------------
+# Provenance stamp  (CM-8, SR-4)
+# --------------------------------------------------------------------------
+- name: Read SBOM manifest digest
+  ansible.builtin.stat:
+    path: "{{ sbom_dir | default('/var/lib/sbom') }}/{{ image_name }}-{{ image_version }}.manifest.json"
+    checksum_algorithm: sha256
+  register: finalize_manifest
+  tags: [nist_CM-8]
+
+- name: Write /etc/image-release
+  ansible.builtin.copy:
+    dest: /etc/image-release
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      IMAGE_NAME={{ image_name }}
+      IMAGE_VERSION={{ image_version }}
+      IMAGE_GIT_SHA={{ image_git_sha }}
+      IMAGE_BUILDER={{ image_builder | default('manual') }}
+      IMAGE_BUILT_AT={{ ansible_date_time.iso8601 }}
+      IMAGE_OS="{{ ansible_distribution }} {{ ansible_distribution_version }}"
+      IMAGE_KERNEL={{ ansible_kernel }}
+      HARDENING_PROFILE={{ hardening_profile | default('nist-800-53-moderate') }}
+      SBOM_DIR={{ sbom_dir | default('/var/lib/sbom') }}
+      SBOM_MANIFEST_SHA256={{ finalize_manifest.stat.checksum | default('none') }}
+      SBOM_SPDX_SHA256={{ sbom_spdx_sha256 | default('none') }}
+      AIDE_DB_DIGEST_FILE=/var/lib/aide/aide.db.gz.sha256
+  tags: [nist_CM-8, nist_SR-4]
+
+- name: Stamp image attributes into the OpenTelemetry resource
+  ansible.builtin.lineinfile:
+    path: /etc/otelcol-contrib/otelcol-contrib.conf
+    regexp: '^OTEL_RESOURCE_ATTRIBUTES='
+    line: "OTEL_RESOURCE_ATTRIBUTES={{ finalize_otel_attrs | join(',') }}"
+    create: true
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+  vars:
+    finalize_otel_attrs:
+      - "image.name={{ image_name }}"
+      - "image.version={{ image_version }}"
+      - "image.git_sha={{ image_git_sha }}"
+      - "image.sbom.sha256={{ sbom_spdx_sha256 | default('none') }}"
+      - "hardening.profile={{ hardening_profile | default('nist-800-53-moderate') }}"
+  failed_when: false
+  tags: [nist_SI-4]
+
+# --------------------------------------------------------------------------
+# First-boot host key regeneration  (SC-12)
+# --------------------------------------------------------------------------
+- name: Install first-boot SSH host key regeneration unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ssh-hostkeys-regen.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }} — NIST SC-12: unique host keys per instance
+      [Unit]
+      Description=Regenerate SSH host keys on first boot
+      Before=ssh.service sshd.service
+      ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/ssh-keygen -q -N "" -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
+      ExecStart=/usr/bin/ssh-keygen -q -N "" -t rsa -b {{ ssh_rsa_bits | default(4096) }} -f /etc/ssh/ssh_host_rsa_key
+      ExecStartPost=/bin/chmod 0600 /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_rsa_key
+      {% if ansible_os_family == 'RedHat' %}
+      ExecStartPost=/sbin/restorecon -R /etc/ssh
+      {% endif %}
+
+      [Install]
+      WantedBy=multi-user.target
+  when: finalize_regenerate_host_keys_on_boot | bool
+  tags: [nist_SC-12]
+
+- name: Enable host key regeneration unit
+  ansible.builtin.systemd:
+    name: ssh-hostkeys-regen.service
+    enabled: true
+    daemon_reload: true
+  when: finalize_regenerate_host_keys_on_boot | bool
+  tags: [nist_SC-12]
+
+# --------------------------------------------------------------------------
+# Build account: lock now, strip NOPASSWD in the final seal step (AC-2, AC-6)
+# Stripping NOPASSWD earlier would break `become` for the remaining tasks, so the
+# corrected sudoers files are prepared here and installed atomically at the end.
+# --------------------------------------------------------------------------
+- name: Lock the build account password
+  ansible.builtin.user:
+    name: "{{ finalize_build_user }}"
+    password_lock: true
+  when:
+    - not finalize_remove_build_user | bool
+    - finalize_build_user != 'root'
+  tags: [nist_AC-2]
+
+- name: Find sudoers entries granting NOPASSWD to the build account
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -lE '^[^#]*\b{{ finalize_build_user }}\b.*NOPASSWD' /etc/sudoers /etc/sudoers.d/* 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  register: finalize_nopasswd_files
+  changed_when: false
+  when: finalize_strip_build_user_nopasswd | bool
+  tags: [nist_AC-6]
+
+- name: Create seal staging directory
+  ansible.builtin.file:
+    path: "{{ finalize_seal_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [nist_AC-6]
+
+- name: Stage copies of those sudoers files
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ finalize_seal_dir }}/{{ item | replace('/', '__') }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0440"
+  loop: "{{ finalize_nopasswd_files.stdout_lines | default([]) }}"
+  when: finalize_strip_build_user_nopasswd | bool
+  tags: [nist_AC-6]
+
+- name: Strip NOPASSWD from the staged copies
+  ansible.builtin.replace:
+    path: "{{ finalize_seal_dir }}/{{ item | replace('/', '__') }}"
+    regexp: '^(?!\s*#)([^#\n]*\b{{ finalize_build_user }}\b[^#\n]*?)\s*NOPASSWD:\s*'
+    replace: '\1 '
+    validate: "visudo -cf %s"
+  loop: "{{ finalize_nopasswd_files.stdout_lines | default([]) }}"
+  when: finalize_strip_build_user_nopasswd | bool
+  tags: [nist_AC-6]
+
+# --------------------------------------------------------------------------
+# Remove build residue BEFORE the AIDE baseline  (SC-4, MP-6)
+# --------------------------------------------------------------------------
+- name: Clean package caches
+  ansible.builtin.command: "{{ 'dnf clean all' if ansible_os_family == 'RedHat' else 'apt-get clean' }}"
+  changed_when: true
+  tags: [nist_CM-7]
+
+- name: Clean cloud-init state so the image re-initialises on first boot
+  ansible.builtin.command: cloud-init clean --logs --seed
+  changed_when: true
+  failed_when: false
+  when: finalize_clean_cloud_init | bool
+  tags: [nist_SC-4]
+
+- name: Truncate logs (audit log intentionally included so the image ships clean)
+  ansible.builtin.shell: |
+    set -o pipefail
+    find /var/log -type f \( -name '*.log' -o -name '*.log.*' -o -name '*.gz' -o -name '*.[0-9]' \
+      -o -name 'messages' -o -name 'secure' -o -name 'syslog' -o -name 'auth.log' -o -name 'audit.log*' \) \
+      -exec truncate -s0 {} +
+    find /var/log -type f \( -name 'wtmp' -o -name 'btmp' -o -name 'lastlog' \) -exec truncate -s0 {} +
+    journalctl --rotate >/dev/null 2>&1 || true
+    journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: finalize_truncate_logs | bool
+  tags: [nist_SC-4]
+
+- name: Remove build artefacts, caches, histories and host keys
+  ansible.builtin.shell: |
+    set -o pipefail
+    # Globs are intentional (per-user histories); the list is operator-controlled.
+    for p in {{ finalize_remove_paths | join(' ') }}; do
+      rm -rf $p 2>/dev/null || true
+    done
+    true
+  args:
+    executable: /bin/bash
+  changed_when: true
+  tags: [nist_SC-4, nist_MP-6]
+
+- name: Reset machine-id (unique per instance; journald/DHCP identity)
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/machine-id
+    owner: root
+    group: root
+    mode: "0444"
+  when: finalize_reset_machine_id | bool
+  tags: [nist_SC-4]
+
+- name: Remove D-Bus machine-id copy
+  ansible.builtin.file:
+    path: /var/lib/dbus/machine-id
+    state: absent
+  when: finalize_reset_machine_id | bool
+  tags: [nist_SC-4]
+
+- name: Trim free space so the image compresses well
+  ansible.builtin.command: fstrim -av
+  changed_when: true
+  failed_when: false
+  when:
+    - finalize_fstrim | bool
+    - not hardening_is_container | bool
+  tags: [finalize]
+
+# --------------------------------------------------------------------------
+# Seal: one privileged step that installs the corrected sudoers, builds the
+# AIDE baseline (SI-7) over the final content, and removes the build account.
+# Nothing that needs `become` may run after this task.
+# --------------------------------------------------------------------------
+- name: Seal the image (sudoers, AIDE baseline, build account)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    aide_bin={{ '/usr/sbin/aide' if ansible_os_family == 'RedHat' else '/usr/bin/aide' }}
+    aide_conf={{ aide_conf | default('/etc/aide.conf' if ansible_os_family == 'RedHat' else '/etc/aide/aide.conf') }}
+
+    # 1. sudoers: install the NOPASSWD-stripped copies atomically
+    for f in {{ finalize_seal_dir }}/*__*; do
+      [ -e "$f" ] || continue
+      dst=$(basename "$f" | sed 's|__|/|g')
+      visudo -cf "$f" >/dev/null
+      install -o root -g root -m 0440 "$f" "$dst"
+    done
+    rm -rf {{ finalize_seal_dir }} /var/lib/hardening
+
+    # 2. AIDE baseline over the final filesystem
+    {% if finalize_init_aide | bool %}
+    "$aide_bin" --init --config="$aide_conf" >/dev/null
+    mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+    sha256sum /var/lib/aide/aide.db.gz | awk '{print $1}' > /var/lib/aide/aide.db.gz.sha256
+    chmod 0600 /var/lib/aide/aide.db.gz /var/lib/aide/aide.db.gz.sha256
+    echo "AIDE_DB_SHA256=$(cat /var/lib/aide/aide.db.gz.sha256)"
+    {% endif %}
+
+    # 3. build account
+    {% if finalize_remove_build_user | bool and finalize_build_user != 'root' %}
+    userdel -rf {{ finalize_build_user }} 2>/dev/null || true
+    rm -f /etc/sudoers.d/*{{ finalize_build_user }}* 2>/dev/null || true
+    echo "BUILD_USER_REMOVED={{ finalize_build_user }}"
+    {% endif %}
+
+    rm -rf /root/.ansible /home/*/.ansible 2>/dev/null || true
+    sync
+    echo "SEALED"
+  args:
+    executable: /bin/bash
+  register: finalize_seal
+  changed_when: true
+  tags: [nist_SI-7, nist_AC-6, nist_AC-2, finalize]
+
+- name: Image sealed
+  ansible.builtin.debug:
+    msg: >-
+      {{ image_name }} v{{ image_version }} finalised — {{ finalize_seal.stdout_lines | join('; ') }}.
+      Host keys and machine-id regenerate on first boot; SBOM + scan reports are in
+      {{ sbom_dir | default('/var/lib/sbom') }} and exported to the controller.
+  tags: [finalize]

@@ -1,0 +1,113 @@
+---
+- name: Write grype configuration (gate policy and accepted risks)
+  ansible.builtin.template:
+    src: grype.yaml.j2
+    dest: "{{ sbom_dir }}/grype.yaml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Update grype vulnerability database (RA-5(2) up-to-date vulnerability information)
+  ansible.builtin.command: /usr/local/bin/grype db update -c {{ sbom_dir }}/grype.yaml
+  environment:
+    GRYPE_CHECK_FOR_APP_UPDATE: "false"
+  changed_when: true
+  when: sbom_grype_db_auto_update | bool
+
+- name: Scan the SBOM (JSON report, never fails here)
+  ansible.builtin.command: >-
+    /usr/local/bin/grype sbom:{{ sbom_dir }}/{{ sbom_basename }}.syft-json.json
+    -c {{ sbom_dir }}/grype.yaml
+    -o json --file {{ sbom_dir }}/{{ sbom_basename }}.vulns.json
+    --quiet
+  environment:
+    GRYPE_CHECK_FOR_APP_UPDATE: "false"
+    GRYPE_DB_AUTO_UPDATE: "false"
+  changed_when: true
+
+- name: Write human-readable and SARIF reports
+  ansible.builtin.command: >-
+    /usr/local/bin/grype sbom:{{ sbom_dir }}/{{ sbom_basename }}.syft-json.json
+    -c {{ sbom_dir }}/grype.yaml
+    -o {{ item.fmt }} --file {{ sbom_dir }}/{{ sbom_basename }}.vulns.{{ item.ext }}
+    --quiet
+  environment:
+    GRYPE_CHECK_FOR_APP_UPDATE: "false"
+    GRYPE_DB_AUTO_UPDATE: "false"
+  loop:
+    - { fmt: table, ext: txt }
+    - { fmt: sarif, ext: sarif }
+  loop_control:
+    label: "{{ item.fmt }}"
+  changed_when: true
+
+- name: Summarise findings by severity
+  ansible.builtin.shell: |
+    set -o pipefail
+    jq -r '
+      def sev: .vulnerability.severity | ascii_downcase;
+      def fixed: (.vulnerability.fix.state == "fixed");
+      {
+        total: (.matches | length),
+        critical: ([.matches[] | select(sev=="critical")] | length),
+        high:     ([.matches[] | select(sev=="high")] | length),
+        medium:   ([.matches[] | select(sev=="medium")] | length),
+        low:      ([.matches[] | select(sev=="low")] | length),
+        negligible: ([.matches[] | select(sev=="negligible")] | length),
+        unknown:  ([.matches[] | select(sev=="unknown")] | length),
+        critical_fixed: ([.matches[] | select(sev=="critical" and fixed)] | length),
+        high_fixed:     ([.matches[] | select(sev=="high" and fixed)] | length),
+        ignored: (.ignoredMatches | length),
+        db_built: .descriptor.db.built
+      }' {{ sbom_dir }}/{{ sbom_basename }}.vulns.json
+  args:
+    executable: /bin/bash
+  register: sbom_summary_raw
+  changed_when: false
+
+- name: Parse summary
+  ansible.builtin.set_fact:
+    sbom_summary: "{{ sbom_summary_raw.stdout | from_json }}"
+
+- name: Publish vulnerability posture as node_exporter metrics (SI-4)
+  ansible.builtin.template:
+    src: sbom.prom.j2
+    dest: "{{ sbom_textfile_dir }}/sbom.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  failed_when: false
+
+- name: Enforce the vulnerability gate (RA-5, SI-2) at severity {{ sbom_fail_on }}
+  ansible.builtin.command: >-
+    /usr/local/bin/grype sbom:{{ sbom_dir }}/{{ sbom_basename }}.syft-json.json
+    -c {{ sbom_dir }}/grype.yaml
+    --fail-on {{ sbom_fail_on }}
+    {{ '--only-fixed' if sbom_only_fixed | bool else '' }}
+    -o table --quiet
+  environment:
+    GRYPE_CHECK_FOR_APP_UPDATE: "false"
+    GRYPE_DB_AUTO_UPDATE: "false"
+  register: sbom_gate
+  changed_when: false
+  failed_when: false
+
+- name: Vulnerability gate result
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Findings: {{ sbom_summary.critical }} critical / {{ sbom_summary.high }} high /
+        {{ sbom_summary.medium }} medium / {{ sbom_summary.low }} low
+        ({{ sbom_summary.ignored }} accepted, DB {{ sbom_summary.db_built }})
+      - "Gate ({{ sbom_fail_on }}{{ ', fixed only' if sbom_only_fixed | bool else '' }}): {{ 'PASS' if sbom_gate.rc == 0 else 'FAIL' }}"
+
+- name: Fail the build on the vulnerability gate
+  ansible.builtin.fail:
+    msg: |
+      Vulnerability gate failed: findings at severity >= {{ sbom_fail_on }}{{ ' with a fix available' if sbom_only_fixed | bool else '' }}.
+      Report: {{ sbom_dir }}/{{ sbom_basename }}.vulns.txt (exported to {{ sbom_export_dir }}).
+      Either patch the base (baseline_upgrade_all=true), or record an accepted risk in sbom_vuln_ignore.
+      {{ sbom_gate.stdout }}
+  when:
+    - sbom_enforce | bool
+    - sbom_gate.rc != 0

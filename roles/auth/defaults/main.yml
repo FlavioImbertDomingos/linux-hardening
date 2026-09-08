@@ -1,0 +1,51 @@
+---
+# ---- Password policy (IA-5) ----
+auth_pass_max_days: 365
+auth_pass_min_days: 1
+auth_pass_warn_age: 7
+auth_inactive_days: 35            # lock account N days after password expiry (AC-2(3))
+auth_encrypt_method: SHA512
+auth_sha_crypt_min_rounds: 100000
+auth_pwquality:
+  minlen: 15
+  minclass: 4
+  dcredit: -1
+  ucredit: -1
+  lcredit: -1
+  ocredit: -1
+  maxrepeat: 3
+  maxclassrepeat: 4
+  difok: 8
+  dictcheck: 1
+  usercheck: 1
+  enforce_for_root: ""
+auth_pwhistory_remember: 5
+
+# ---- Lockout (AC-7) ----
+auth_faillock_deny: 5
+auth_faillock_unlock_time: 900
+auth_faillock_fail_interval: 900
+auth_faillock_even_deny_root: true
+auth_faillock_root_unlock_time: 60
+
+# ---- Session (AC-11, AC-12) ----
+auth_tmout_seconds: 900
+auth_maxlogins: 10
+
+# ---- sudo (AC-6(9), AC-6(10)) ----
+auth_sudo_timestamp_timeout: 5
+auth_sudo_logfile: /var/log/sudo.log
+auth_sudo_iolog: false             # full I/O session recording (AU-14); heavy on disk
+auth_sudo_require_password: true   # rewrites NOPASSWD entries left by cloud images
+# The account Ansible/Packer connects as keeps NOPASSWD until the finalize role
+# removes it, otherwise `become` breaks halfway through the build.
+auth_sudo_preserve_nopasswd_for:
+  - "{{ ansible_user | default(ansible_user_id) }}"
+
+# ---- root ----
+auth_lock_root_password: true
+auth_root_shell_restricted: false  # true => /sbin/nologin for root (console rescue impossible)
+
+# ---- Accounts ----
+auth_system_accounts_nologin: true
+auth_nologin_shell: "{{ '/usr/sbin/nologin' if ansible_os_family == 'Debian' else '/sbin/nologin' }}"

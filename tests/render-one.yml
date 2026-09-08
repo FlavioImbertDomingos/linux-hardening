@@ -1,0 +1,92 @@
+---
+- name: Load role defaults and synthetic facts for {{ render_host.key }}
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value }}"
+  loop: "{{ (render_host.value | combine(render_common)) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    render_common:
+      ansible_architecture: x86_64
+      ansible_virtualization_role: guest
+      ansible_kernel: "6.8.0"
+      ansible_managed: "Ansible managed (render test)"
+      ansible_date_time: { iso8601: "2026-09-08T00:00:00Z", epoch: "1788825600" }
+      inventory_hostname: "{{ render_host.key }}-image"
+      image_name: "base-{{ render_host.key }}"
+      image_version: "1.0.0"
+      image_git_sha: "deadbeef"
+      image_builder: "render-test"
+      hardening_profile: nist-800-53-moderate
+      hardening_is_container: false
+      ntp_servers: [time.cloudflare.com]
+      login_banner: "Authorised use only."
+      otel_exporter_endpoint: "otel.example.internal:4317"
+      hardening_admin_cidrs: ["10.0.0.0/8"]
+      hardening_monitoring_cidrs: ["10.1.0.0/16"]
+      node_exporter_listen: "0.0.0.0:9100"
+      log_remote_host: "syslog.example.internal"
+      log_remote_ca_file: "/etc/ssl/certs/ca.pem"
+      # facts normally produced by tasks inside the roles
+      auditd_privileged_bins: { stdout_lines: [/usr/bin/sudo, /usr/bin/passwd, /usr/bin/su] }
+      ssh_version: "9.6"
+      ssh_supports_include: true
+      ssh_supports_sntrup: true
+      ssh_supports_pubkeyacceptedalgorithms: true
+      sbom_summary: { total: 3, critical: 0, high: 1, medium: 2, low: 0, negligible: 0, unknown: 0, critical_fixed: 0, high_fixed: 1, ignored: 0, db_built: "2026-09-08T00:00:00Z" }
+      sbom_component_count: { stdout: "412" }
+      sbom_gate: { rc: 0 }
+      sbom_hashes: { stdout_lines: ["abc123  base.spdx-json.json", "def456  base.manifest.json"] }
+      sbom_syft_v: "1.51.0"
+      sbom_grype_v: "0.97.2"
+      sbom_cosign_v: "3.1.3"
+      sbom_timestamp: "2026-09-08T00:00:00Z"
+      sbom_integrity_findings: []
+      sbom_vuln_ignore: [{ vulnerability: CVE-2025-0001, reason: "test", expires: "2026-12-31" }]
+      observability_arch: amd64
+      auditd_plugins_dir: /etc/audit/plugins.d
+
+- name: Load defaults of every role
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/{{ item }}/defaults/main.yml"
+  loop: [baseline, kernel, mac, filesystem, auth, ssh, firewall, auditd, aide, logging, observability, sbom, compliance, finalize]
+
+- name: Load OS-family vars for baseline
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/baseline/vars/{{ ansible_os_family }}.yml"
+
+- name: Compute role facts normally set at runtime
+  ansible.builtin.set_fact:
+    kernel_sysctl_effective: "{{ kernel_sysctl | combine(kernel_sysctl_extra) }}"
+    kernel_modules_effective: "{{ (kernel_module_denylist + kernel_module_denylist_extra) | unique }}"
+    kernel_cmdline_effective: "{{ kernel_cmdline_args + kernel_cmdline_args_extra }}"
+    ssh_kex_effective: "{{ ssh_kex_algorithms }}"
+    sbom_basename: "{{ image_name }}-{{ image_version }}"
+    sbom_source_name: "{{ image_name }}"
+    sbom_source_version: "{{ image_version }}"
+    ssh_supports_include: "{{ not (ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8') }}"
+    ssh_supports_sntrup: "{{ not (ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8') }}"
+    ssh_supports_pubkeyacceptedalgorithms: "{{ not (ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8') }}"
+    ssh_version: "{{ '8.0' if ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8' else '9.6' }}"
+
+- name: Create output directory
+  ansible.builtin.file:
+    path: "{{ render_out }}/{{ render_host.key }}"
+    state: directory
+    mode: "0755"
+
+- name: Find templates
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/../roles"
+    patterns: "*.j2"
+    recurse: true
+  register: render_templates
+
+- name: Render templates
+  ansible.builtin.template:
+    src: "{{ item.path }}"
+    dest: "{{ render_out }}/{{ render_host.key }}/{{ item.path.split('/roles/')[1] | replace('/templates/', '__') | regex_replace('\\.j2$', '') }}"
+    mode: "0644"
+  loop: "{{ render_templates.files }}"
+  loop_control:
+    label: "{{ item.path.split('/roles/')[1] }}"

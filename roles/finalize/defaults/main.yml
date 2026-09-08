@@ -1,0 +1,34 @@
+---
+# Seal the image: stamp provenance, initialise AIDE, remove build residue.
+finalize_enabled: true
+# Remove the account Packer/Ansible connected as. Set false if the same account
+# is your break-glass user (then lock its password and rely on keys instead).
+finalize_remove_build_user: false
+finalize_build_user: "{{ ansible_user | default(ansible_user_id) }}"
+# Strip NOPASSWD sudo that the auth role preserved for the build account.
+finalize_strip_build_user_nopasswd: true
+finalize_init_aide: true
+finalize_regenerate_host_keys_on_boot: true
+finalize_reset_machine_id: true
+finalize_clean_cloud_init: true
+finalize_truncate_logs: true
+finalize_fstrim: true
+finalize_seal_dir: /var/lib/hardening/seal
+finalize_remove_paths:
+  - /var/lib/hardening/staging
+  - /root/.ansible
+  - /root/.bash_history
+  - /root/.cache
+  - /root/.lesshst
+  - /root/.viminfo
+  - /root/.wget-hsts
+  - /home/*/.bash_history
+  - /home/*/.ansible
+  - /var/cache/dnf
+  - /var/cache/yum
+  - /var/cache/apt/archives
+  - /var/lib/apt/lists
+  - /var/tmp/*
+  - /tmp/*
+  - /etc/ssh/ssh_host_*_key
+  - /etc/ssh/ssh_host_*_key.pub

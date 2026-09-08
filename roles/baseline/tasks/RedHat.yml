@@ -1,0 +1,49 @@
+---
+- name: Enforce GPG verification for all dnf operations (SI-7, CM-5)
+  community.general.ini_file:
+    path: /etc/dnf/dnf.conf
+    section: main
+    option: "{{ item.key }}"
+    value: "{{ item.value }}"
+    owner: root
+    group: root
+    mode: "0644"
+    no_extra_spaces: true
+  loop:
+    - { key: gpgcheck, value: "1" }
+    - { key: localpkg_gpgcheck, value: "1" }
+    - { key: repo_gpgcheck, value: "0" }
+    - { key: clean_requirements_on_remove, value: "True" }
+    - { key: install_weak_deps, value: "False" }
+    - { key: sslverify, value: "1" }
+
+- name: Find repo files on the target
+  ansible.builtin.find:
+    paths: /etc/yum.repos.d
+    patterns: "*.repo"
+  register: baseline_repo_files
+
+- name: Ensure every repo file has gpgcheck=1
+  ansible.builtin.replace:
+    path: "{{ item.path }}"
+    regexp: '^gpgcheck\s*=\s*0'
+    replace: "gpgcheck=1"
+  loop: "{{ baseline_repo_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Configure dnf-automatic for security-only updates (SI-2)
+  ansible.builtin.template:
+    src: dnf-automatic.conf.j2
+    dest: /etc/dnf/automatic.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: baseline_auto_security_updates | bool
+
+- name: Enable dnf-automatic timer
+  ansible.builtin.systemd:
+    name: dnf-automatic.timer
+    enabled: "{{ baseline_auto_security_updates | bool }}"
+    state: "{{ 'started' if baseline_auto_security_updates | bool and not hardening_is_container | bool else omit }}"
+    daemon_reload: true

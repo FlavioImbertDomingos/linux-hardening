@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run AIDE integrity check {{ aide_check_calendar }}
+
+[Timer]
+OnCalendar={{ aide_check_calendar }}
+RandomizedDelaySec={{ aide_check_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

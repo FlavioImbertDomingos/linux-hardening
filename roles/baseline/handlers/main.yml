@@ -1,0 +1,6 @@
+---
+- name: Restart chrony
+  ansible.builtin.systemd:
+    name: "{{ baseline_chrony_service }}"
+    state: restarted
+  when: not hardening_is_container | bool

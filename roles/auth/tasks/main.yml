@@ -1,0 +1,239 @@
+---
+- name: Ensure PAM tooling is installed
+  ansible.builtin.package:
+    name: "{{ ['libpwquality', 'authselect'] if ansible_os_family == 'RedHat' else ['libpam-pwquality', 'libpam-modules'] }}"
+    state: present
+  tags: [nist_IA-5]
+
+# --------------------------------------------------------------------------
+# login.defs / useradd  (IA-5, AC-2)
+# --------------------------------------------------------------------------
+- name: Configure login.defs
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: '^\s*#?\s*{{ item.key }}\s+'
+    line: "{{ item.key }} {{ item.value }}"
+  loop:
+    - { key: PASS_MAX_DAYS, value: "{{ auth_pass_max_days }}" }
+    - { key: PASS_MIN_DAYS, value: "{{ auth_pass_min_days }}" }
+    - { key: PASS_WARN_AGE, value: "{{ auth_pass_warn_age }}" }
+    - { key: ENCRYPT_METHOD, value: "{{ auth_encrypt_method }}" }
+    - { key: SHA_CRYPT_MIN_ROUNDS, value: "{{ auth_sha_crypt_min_rounds }}" }
+    - { key: LOGIN_RETRIES, value: "3" }
+    - { key: LOGIN_TIMEOUT, value: "60" }
+    - { key: FAIL_DELAY, value: "4" }
+    - { key: CREATE_HOME, value: "yes" }
+    - { key: USERGROUPS_ENAB, value: "yes" }
+    - { key: SYSLOG_SU_ENAB, value: "yes" }
+    - { key: SYSLOG_SG_ENAB, value: "yes" }
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [nist_IA-5, nist_AC-2]
+
+- name: Set useradd default inactivity lock
+  ansible.builtin.lineinfile:
+    path: /etc/default/useradd
+    regexp: '^\s*#?\s*INACTIVE='
+    line: "INACTIVE={{ auth_inactive_days }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [nist_AC-2]
+
+- name: Enumerate human accounts with a password set
+  ansible.builtin.shell: |
+    set -o pipefail
+    min="$(awk '/^\s*UID_MIN/{print $2}' /etc/login.defs)"
+    awk -F: -v min="$min" '($3>=min && $3!=65534){print $1}' /etc/passwd \
+      | while read -r u; do grep -qE "^$u:[^!*:]" /etc/shadow && echo "$u"; done || true
+  args:
+    executable: /bin/bash
+  register: auth_human_users
+  changed_when: false
+  tags: [nist_IA-5]
+
+- name: Apply aging to existing human accounts
+  ansible.builtin.command: >-
+    chage --maxdays {{ auth_pass_max_days }} --mindays {{ auth_pass_min_days }}
+    --warndays {{ auth_pass_warn_age }} --inactive {{ auth_inactive_days }} {{ item }}
+  loop: "{{ auth_human_users.stdout_lines }}"
+  changed_when: true
+  tags: [nist_IA-5]
+
+# --------------------------------------------------------------------------
+# Password quality / history / lockout  (IA-5, AC-7)
+# --------------------------------------------------------------------------
+- name: Configure pwquality
+  ansible.builtin.template:
+    src: pwquality.conf.j2
+    dest: /etc/security/pwquality.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [nist_IA-5]
+
+- name: Configure faillock
+  ansible.builtin.template:
+    src: faillock.conf.j2
+    dest: /etc/security/faillock.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [nist_AC-7]
+
+- name: Configure pwhistory (RHEL 9 / pam >= 1.5)
+  ansible.builtin.copy:
+    dest: /etc/security/pwhistory.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }} — NIST IA-5(1)
+      remember = {{ auth_pwhistory_remember }}
+      enforce_for_root
+  when: not (ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8')
+  tags: [nist_IA-5]
+
+- name: Include PAM stack wiring
+  ansible.builtin.include_tasks: "pam_{{ ansible_os_family }}.yml"
+  tags: [nist_IA-5, nist_AC-7]
+
+# --------------------------------------------------------------------------
+# Session controls  (AC-11, AC-12)
+# --------------------------------------------------------------------------
+- name: Set shell inactivity timeout
+  ansible.builtin.copy:
+    dest: /etc/profile.d/99-tmout.sh
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }} — NIST AC-11 / AC-12 session termination
+      TMOUT={{ auth_tmout_seconds }}
+      readonly TMOUT
+      export TMOUT
+  tags: [nist_AC-11, nist_AC-12]
+
+- name: Limit concurrent logins
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/99-maxlogins.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      * hard maxlogins {{ auth_maxlogins }}
+  tags: [nist_AC-10]
+
+# --------------------------------------------------------------------------
+# Banners  (AC-8)
+# --------------------------------------------------------------------------
+- name: Install login banners
+  ansible.builtin.copy:
+    content: "{{ login_banner | default('Authorised use only.') }}"
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net
+  tags: [nist_AC-8]
+
+# --------------------------------------------------------------------------
+# sudo  (AC-6(9), AC-6(10), AU-2)
+# --------------------------------------------------------------------------
+- name: Harden sudo defaults
+  ansible.builtin.template:
+    src: sudoers-hardening.j2
+    dest: /etc/sudoers.d/00-hardening
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  tags: [nist_AC-6, nist_AU-2]
+
+- name: Find sudoers files with NOPASSWD
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -lE '^[^#]*NOPASSWD' /etc/sudoers /etc/sudoers.d/* 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  register: auth_nopasswd_files
+  changed_when: false
+  tags: [nist_AC-6]
+
+- name: Require password for sudo (strip NOPASSWD, except preserved build accounts)
+  ansible.builtin.replace:
+    path: "{{ item }}"
+    regexp: "{{ auth_nopasswd_regexp }}"
+    replace: '\1'
+    validate: "visudo -cf %s"
+  vars:
+    auth_nopasswd_regexp: >-
+      ^(?!\s*#)(?!.*\b(?:{{ (auth_sudo_preserve_nopasswd_for + ['__nobody__']) | join('|') }})\b)([^#\n]*?)\s*NOPASSWD:\s*
+  loop: "{{ auth_nopasswd_files.stdout_lines }}"
+  when: auth_sudo_require_password | bool
+  tags: [nist_AC-6]
+
+- name: Find sudoers.d files
+  ansible.builtin.find:
+    paths: /etc/sudoers.d
+    file_type: file
+  register: auth_sudoers_d
+  tags: [nist_AC-6]
+
+- name: Ensure sudoers files are not world-readable
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0440"
+  loop: "{{ ['/etc/sudoers'] + (auth_sudoers_d.files | map(attribute='path') | list) }}"
+  tags: [nist_AC-6]
+
+# --------------------------------------------------------------------------
+# Accounts  (AC-2, AC-6)
+# --------------------------------------------------------------------------
+- name: Lock root password
+  ansible.builtin.user:
+    name: root
+    password_lock: true
+  when: auth_lock_root_password | bool
+  tags: [nist_AC-6, nist_IA-2]
+
+- name: Enumerate system accounts with a login shell
+  ansible.builtin.shell: |
+    set -o pipefail
+    awk -F: -v max="$(awk '/^\s*UID_MIN/{print $2}' /etc/login.defs)" \
+      '($1!="root" && $1!="sync" && $1!="shutdown" && $1!="halt" && $3<max && $7!~/(nologin|false)$/){print $1}' /etc/passwd
+  args:
+    executable: /bin/bash
+  register: auth_system_shell_users
+  changed_when: false
+  tags: [nist_AC-6]
+
+- name: Set nologin shell on system accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    shell: "{{ auth_nologin_shell }}"
+  loop: "{{ auth_system_shell_users.stdout_lines }}"
+  when: auth_system_accounts_nologin | bool
+  tags: [nist_AC-6]
+
+- name: Ensure sync/shutdown/halt cannot log in
+  ansible.builtin.user:
+    name: "{{ item }}"
+    shell: "{{ auth_nologin_shell }}"
+    password_lock: true
+  loop: [sync, shutdown, halt]
+  failed_when: false
+  tags: [nist_AC-6]
+
+- name: Restrict su to the wheel/sudo group (AC-6)
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^\s*#?\s*auth\s+required\s+pam_wheel.so'
+    line: "auth required pam_wheel.so use_uid group={{ 'wheel' if ansible_os_family == 'RedHat' else 'sudo' }}"
+    insertafter: '^auth\s+sufficient\s+pam_rootok.so'
+  tags: [nist_AC-6]

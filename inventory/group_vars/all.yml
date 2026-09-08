@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# Cross-cutting settings for the hardened base image.
+# Role-specific knobs live in roles/<role>/defaults/main.yml and can be
+# overridden here or with -e. Everything here is consumed by several roles.
+# =============================================================================
+
+# --- Image identity (stamped into /etc/image-release, SBOM, OTel resource) ---
+image_name: "{{ inventory_hostname }}"
+image_version: "{{ lookup('env', 'IMAGE_VERSION') | default('0.0.0-dev', true) }}"
+image_git_sha: "{{ lookup('env', 'GIT_SHA') | default('unknown', true) }}"
+image_builder: "{{ lookup('env', 'CI_PIPELINE_URL') | default('manual', true) }}"
+
+# --- Baseline profile ---------------------------------------------------------
+# nist-800-53-moderate is the only profile shipped; the tag/controls map in
+# docs/controls-map.md is written against it.
+hardening_profile: nist-800-53-moderate
+
+# Set to true when running molecule/containers: skips kernel/grub/mount/firewall
+# tasks that cannot work without a real kernel. Auto-detected in the playbook.
+hardening_is_container: false
+
+# Reboot the build VM after the OS roles so kernel cmdline, MAC and mount changes
+# are live before verification, SBOM and finalisation.
+hardening_reboot: true
+
+# --- Network trust boundaries ---------------------------------------------------
+# Where admins SSH from. Empty list = allow from anywhere on the SSH port.
+hardening_admin_cidrs:
+  - 10.0.0.0/8
+# Where Prometheus/OTel gateway scrapes from (node_exporter :9100).
+hardening_monitoring_cidrs:
+  - 10.0.0.0/8
+
+# --- Central log / telemetry endpoints ------------------------------------------
+# OTLP gateway that the on-host OpenTelemetry Collector forwards to.
+otel_exporter_endpoint: "otel-gateway.example.internal:4317"
+otel_exporter_tls_insecure: false          # true only in labs
+otel_exporter_ca_file: ""                  # e.g. /etc/pki/tls/certs/internal-ca.pem
+otel_exporter_headers: {}                  # e.g. {"authorization": "Bearer ..."} — use vault
+# Optional classic syslog-over-TLS forwarding (RFC 5425) in addition to OTel.
+log_remote_host: ""                        # e.g. syslog.example.internal
+log_remote_port: 6514
+log_remote_ca_file: ""                     # PEM bundle for the collector's CA
+
+# --- Time ------------------------------------------------------------------------
+ntp_servers:
+  - time.cloudflare.com
+  - time.google.com
+
+# --- Login banner (AC-8) ----------------------------------------------------------
+login_banner: |
+  ***********************************************************************
+  *  This system is for authorised use only. All activity is monitored  *
+  *  and recorded. By continuing you consent to such monitoring.        *
+  ***********************************************************************
+
+# --- SBOM / supply-chain guarantees (see roles/sbom/defaults) --------------------
+sbom_fail_on: high            # negligible|low|medium|high|critical
+sbom_only_fixed: true         # gate only on vulnerabilities that have a fix
+sbom_enforce: true            # false = report but never fail the build
+sbom_verify_signatures: true  # cosign-verify syft/grype release checksums
+# Signing: set ONE of these. Values should come from vault / CI secrets.
+sbom_cosign_key: ""           # path on the controller to cosign.key (or "env://COSIGN_KEY")
+sbom_cosign_keyless: false    # use Fulcio/Rekor keyless signing (needs OIDC in CI)
+sbom_export_dir: "{{ playbook_dir }}/../artifacts"
+
+# --- Kernel / FIPS -------------------------------------------------------------------
+kernel_fips_enabled: false    # true => RHEL fips-mode-setup / Ubuntu Pro fips-updates
+kernel_lockdown_mode: integrity   # integrity|confidentiality
+kernel_disable_ipv6: false
+
+# --- node_exporter exposure ---------------------------------------------------------
+# Default: loopback only — the on-host OTel Collector scrapes it and forwards
+# metrics, so nothing extra listens on the network. Set "0.0.0.0:9100" to let
+# Prometheus scrape directly (the firewall then opens 9100 to monitoring CIDRs).
+node_exporter_listen: "127.0.0.1:9100"

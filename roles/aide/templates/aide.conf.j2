@@ -1,0 +1,91 @@
+# {{ ansible_managed }} — NIST SI-7 / SI-7(1) / AU-9(3) file integrity baseline
+@@define DBDIR {{ aide_db_dir }}
+@@define LOGDIR /var/log/aide
+{% if ansible_os_family == 'RedHat' %}
+{# RHEL 8/9 ship AIDE 0.16: legacy option names #}
+database=file:@@{DBDIR}/aide.db.gz
+database_out=file:@@{DBDIR}/aide.db.new.gz
+gzip_dbout=yes
+verbose=5
+report_url=file:@@{LOGDIR}/aide.log
+report_url=stdout
+{% if aide_report_to_syslog | bool %}
+report_url=syslog:LOG_AUTH
+{% endif %}
+summarize_changes=yes
+grouped=yes
+{% else %}
+{# Ubuntu 22.04/24.04 ship AIDE 0.17+ #}
+database_in=file:@@{DBDIR}/aide.db.gz
+database_out=file:@@{DBDIR}/aide.db.new.gz
+gzip_dbout=yes
+report_url=file:@@{LOGDIR}/aide.log
+report_url=stdout
+{% if aide_report_to_syslog | bool %}
+report_url=syslog:LOG_AUTH
+{% endif %}
+report_summarize_changes=yes
+report_grouped=yes
+log_level=warning
+report_level=changed_attributes
+{% endif %}
+
+# Rule groups — sha512 + sha256 on everything hashed (SC-13)
+ALLXTRAHASHES = sha256+sha512
+NORMAL   = p+i+n+u+g+s+m+c+acl+selinux+xattrs+sha256+sha512
+DIR      = p+i+n+u+g+acl+selinux+xattrs
+PERMS    = p+u+g+acl+selinux+xattrs
+LOG      = p+u+g+n+acl+selinux+ftype
+CONTENT  = sha256+sha512+ftype
+DATAONLY = p+n+u+g+s+acl+selinux+xattrs+sha256+sha512
+AUDITTOOLS = p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
+
+# --- exclusions ---
+!/proc
+!/sys
+!/dev
+!/run
+!/tmp
+!/var/tmp
+!/var/cache
+!/var/spool
+!/var/log
+!/var/lib/apt
+!/var/lib/dnf
+!/var/lib/yum
+!/var/lib/rpm/__db
+!/var/lib/systemd
+!/var/lib/chrony
+!/var/lib/fluent-bit
+!/var/lib/otelcol-contrib
+!/var/lib/node_exporter/textfile/.*\.tmp$
+!/home
+!/mnt
+!/media
+!/lost\+found
+{% for p in aide_exclude_paths %}
+!{{ p }}
+{% endfor %}
+
+# --- audit tools get the strictest rule (AU-9(3)) ---
+/usr/sbin/auditctl AUDITTOOLS
+/usr/sbin/auditd AUDITTOOLS
+/usr/sbin/ausearch AUDITTOOLS
+/usr/sbin/aureport AUDITTOOLS
+/usr/sbin/autrace AUDITTOOLS
+/usr/sbin/augenrules AUDITTOOLS
+/usr/sbin/audispd AUDITTOOLS
+/usr/sbin/rsyslogd AUDITTOOLS
+/usr/local/bin/node_exporter AUDITTOOLS
+/usr/bin/otelcol-contrib AUDITTOOLS
+/opt/fluent-bit/bin/fluent-bit AUDITTOOLS
+/usr/local/bin/syft AUDITTOOLS
+/usr/local/bin/grype AUDITTOOLS
+/usr/local/bin/cosign AUDITTOOLS
+
+# --- baseline ---
+{% for p in aide_include_paths %}
+{{ p }} NORMAL
+{% endfor %}
+/var/lib/sbom DATAONLY
+/etc/image-release NORMAL

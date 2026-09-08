@@ -1,0 +1,95 @@
+---
+- name: Add Fluent Bit signing key (apt)
+  ansible.builtin.get_url:
+    url: https://packages.fluentbit.io/fluentbit.key
+    dest: /usr/share/keyrings/fluentbit.asc
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_os_family == 'Debian'
+
+- name: Add Fluent Bit repository (apt)
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/fluentbit.asc] https://packages.fluentbit.io/ubuntu/{{ ansible_distribution_release }} {{ ansible_distribution_release }} main"
+    filename: fluent-bit
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Debian'
+
+- name: Add Fluent Bit repository (dnf)
+  ansible.builtin.yum_repository:
+    name: fluent-bit
+    description: Fluent Bit official packages
+    baseurl: "https://packages.fluentbit.io/centos/{{ ansible_distribution_major_version }}/$basearch/"
+    gpgcheck: true
+    gpgkey: https://packages.fluentbit.io/fluentbit.key
+    repo_gpgcheck: true
+    enabled: true
+  when: ansible_os_family == 'RedHat'
+
+- name: Install Fluent Bit
+  ansible.builtin.package:
+    name: "fluent-bit{{ ('=' if ansible_os_family == 'Debian' else '-') + observability_fluentbit_version if observability_fluentbit_version | length > 0 else '' }}"
+    state: present
+
+- name: Create Fluent Bit state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - /var/lib/fluent-bit
+    - "{{ observability_fluentbit_storage_dir }}"
+
+- name: Write Fluent Bit configuration (YAML)
+  ansible.builtin.template:
+    src: fluent-bit.yaml.j2
+    dest: /etc/fluent-bit/fluent-bit.yaml
+    owner: root
+    group: root
+    mode: "0640"
+    validate: "/opt/fluent-bit/bin/fluent-bit --dry-run -c %s"
+  notify: Restart fluent-bit
+
+- name: Create systemd drop-in directory for fluent-bit
+  ansible.builtin.file:
+    path: /etc/systemd/system/fluent-bit.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Point the service at the YAML configuration and harden it
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/fluent-bit.service.d/hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Service]
+      ExecStart=
+      ExecStart=/opt/fluent-bit/bin/fluent-bit -c /etc/fluent-bit/fluent-bit.yaml
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      RestrictRealtime=true
+      LockPersonality=true
+      ReadWritePaths=/var/lib/fluent-bit
+      ReadOnlyPaths=/var/log
+      Restart=always
+      RestartSec=5
+  notify: Restart fluent-bit
+
+- name: Enable Fluent Bit
+  ansible.builtin.systemd:
+    name: fluent-bit
+    enabled: true
+    daemon_reload: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"

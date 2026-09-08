@@ -1,0 +1,54 @@
+---
+# RHEL 8/9 manage PAM through authselect. Editing /etc/pam.d directly breaks the
+# authselect "in sync" state, so we derive a custom profile from whatever base the
+# image ships (sssd on RHEL 8, sssd or local on RHEL 9) and select it with the
+# hardening features enabled.
+- name: Read current authselect profile
+  ansible.builtin.command: authselect current --raw
+  register: auth_authselect_current
+  changed_when: false
+  failed_when: false
+
+- name: Determine base profile
+  ansible.builtin.set_fact:
+    auth_authselect_base: >-
+      {{ (auth_authselect_current.stdout.split()[0] if auth_authselect_current.rc == 0 else 'sssd')
+         | regex_replace('^custom/.*$', 'sssd') }}
+
+- name: Check for existing custom hardening profile
+  ansible.builtin.stat:
+    path: /etc/authselect/custom/hardening
+  register: auth_custom_profile
+
+- name: Create custom profile from the base
+  ansible.builtin.command: "authselect create-profile hardening -b {{ auth_authselect_base }} --symlink-meta --symlink-dconf"
+  changed_when: true
+  when: not auth_custom_profile.stat.exists
+
+- name: Pin pwhistory count in the custom profile (RHEL 8 has no pwhistory.conf)
+  ansible.builtin.replace:
+    path: "/etc/authselect/custom/hardening/{{ item }}"
+    regexp: '^(password\s+requisite\s+pam_pwhistory\.so)(?:\s+remember=\d+)?(.*)$'
+    replace: '\1 remember={{ auth_pwhistory_remember }}\2'
+  loop: [system-auth, password-auth]
+  when: ansible_distribution_major_version == '8'
+
+- name: Ensure pwquality enforces for root and limits retries
+  ansible.builtin.replace:
+    path: "/etc/authselect/custom/hardening/{{ item }}"
+    regexp: '^(password\s+requisite\s+pam_pwquality\.so)(?!.*enforce_for_root)(.*)$'
+    replace: '\1\2 retry=3 enforce_for_root'
+  loop: [system-auth, password-auth]
+
+- name: Select the custom profile with faillock (AC-7) and pwhistory (IA-5(1))
+  ansible.builtin.command: authselect select custom/hardening with-faillock with-pwhistory --force
+  changed_when: true
+  when: >-
+    auth_authselect_current.rc != 0
+    or 'custom/hardening' not in auth_authselect_current.stdout
+    or 'with-faillock' not in auth_authselect_current.stdout
+    or 'with-pwhistory' not in auth_authselect_current.stdout
+
+- name: Apply authselect changes
+  ansible.builtin.command: authselect apply-changes
+  changed_when: true

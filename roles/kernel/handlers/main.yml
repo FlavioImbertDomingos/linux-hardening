@@ -1,0 +1,17 @@
+---
+- name: Reload sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+  when: not hardening_is_container | bool
+
+- name: Rebuild initramfs
+  ansible.builtin.command: "{{ 'dracut -f --regenerate-all' if ansible_os_family == 'RedHat' else 'update-initramfs -u -k all' }}"
+  changed_when: true
+  when: not hardening_is_container | bool
+
+- name: Update grub
+  ansible.builtin.command: update-grub
+  changed_when: true
+  when:
+    - ansible_os_family == 'Debian'
+    - not hardening_is_container | bool

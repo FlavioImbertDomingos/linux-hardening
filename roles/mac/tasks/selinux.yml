@@ -1,0 +1,48 @@
+---
+- name: Ensure SELinux packages are present
+  ansible.builtin.package:
+    name:
+      - selinux-policy-targeted
+      - policycoreutils-python-utils
+      - libselinux-utils
+    state: present
+
+- name: Set SELinux to enforcing (persisted; live when possible)
+  ansible.posix.selinux:
+    state: "{{ mac_selinux_state }}"
+    policy: "{{ mac_selinux_policy }}"
+  register: mac_selinux_result
+  when: not hardening_is_container | bool
+
+- name: Ensure SELinux is not disabled on the kernel command line
+  ansible.builtin.command: grubby --update-kernel=ALL --remove-args="selinux=0 enforcing=0"
+  changed_when: true
+  when: not hardening_is_container | bool
+
+- name: Set SELinux booleans
+  ansible.posix.seboolean:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+    persistent: true
+  loop: "{{ mac_selinux_booleans }}"
+  loop_control:
+    label: "{{ item.name }}={{ item.state }}"
+  failed_when: false
+  when: not hardening_is_container | bool
+
+- name: Remove SELinux troubleshooting daemons (CM-7)
+  ansible.builtin.package:
+    name:
+      - setroubleshoot
+      - setroubleshoot-server
+      - mcstrans
+    state: absent
+
+- name: Schedule full relabel on next boot if mode changed
+  ansible.builtin.file:
+    path: /.autorelabel
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  when: mac_selinux_result is changed and mac_selinux_result.reboot_required | default(false)

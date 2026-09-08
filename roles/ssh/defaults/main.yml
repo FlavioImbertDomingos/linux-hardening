@@ -1,0 +1,64 @@
+---
+ssh_port: 22
+ssh_listen_addresses: []           # empty = all; e.g. ["0.0.0.0"]
+ssh_address_family: any            # any|inet|inet6
+ssh_password_authentication: "no"  # keys only (IA-2, IA-5(2))
+ssh_permit_root_login: "no"
+ssh_max_auth_tries: 3
+ssh_max_sessions: 4
+ssh_max_startups: "10:30:60"
+ssh_login_grace_time: 30
+ssh_client_alive_interval: 300     # AC-12 / SC-10 idle session termination
+ssh_client_alive_count_max: 1
+ssh_allow_tcp_forwarding: "no"
+ssh_allow_agent_forwarding: "no"
+ssh_x11_forwarding: "no"
+ssh_permit_tunnel: "no"
+ssh_gateway_ports: "no"
+ssh_log_level: VERBOSE             # logs key fingerprints (AU-3)
+ssh_banner: /etc/issue.net
+ssh_use_dns: "no"
+ssh_rekey_limit: "512M 1h"         # SC-12 key re-negotiation
+# Restrict who may SSH in. Empty list = no AllowGroups directive.
+ssh_allow_groups: []
+ssh_deny_users: []
+
+# Post-quantum hybrid KEX is preferred wherever the OpenSSH version has it.
+ssh_kex_algorithms:
+  - sntrup761x25519-sha512@openssh.com
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - diffie-hellman-group16-sha512
+  - diffie-hellman-group18-sha512
+ssh_ciphers:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+ssh_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+ssh_host_key_algorithms:
+  - ssh-ed25519
+  - ssh-ed25519-cert-v01@openssh.com
+  - rsa-sha2-512
+  - rsa-sha2-512-cert-v01@openssh.com
+  - rsa-sha2-256
+  - rsa-sha2-256-cert-v01@openssh.com
+ssh_pubkey_accepted_algorithms: "{{ ssh_host_key_algorithms }}"
+
+# On RHEL the system-wide crypto policy normally owns sshd's algorithm list.
+# true  = write explicit algorithms (and on RHEL 8 detach sshd from the policy)
+# false = on RHEL rely on update-crypto-policies (kernel role sets DEFAULT:NO-SHA1)
+ssh_explicit_crypto: true
+
+# Host keys: only ed25519 and RSA-4096 are kept; DSA/ECDSA removed (SC-13).
+ssh_host_key_types:
+  - ed25519
+  - rsa
+ssh_rsa_bits: 4096
+# Drop DH moduli below this many bits from /etc/ssh/moduli.
+ssh_moduli_min_bits: 3071
+
+# ssh client defaults for the image (outbound hygiene)
+ssh_client_hardening: true

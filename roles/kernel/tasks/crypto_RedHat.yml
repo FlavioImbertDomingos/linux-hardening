@@ -1,0 +1,20 @@
+---
+- name: Read current system-wide crypto policy
+  ansible.builtin.command: update-crypto-policies --show
+  register: kernel_crypto_current
+  changed_when: false
+
+- name: Enable FIPS mode (SC-13 FIPS-validated cryptography)
+  ansible.builtin.command: fips-mode-setup --enable
+  changed_when: true
+  when:
+    - kernel_fips_enabled | bool
+    - kernel_crypto_current.stdout != 'FIPS'
+    - not hardening_is_container | bool
+
+- name: Set system-wide crypto policy
+  ansible.builtin.command: "update-crypto-policies --set {{ kernel_crypto_policy }}"
+  changed_when: true
+  when:
+    - not kernel_fips_enabled | bool
+    - kernel_crypto_current.stdout != kernel_crypto_policy

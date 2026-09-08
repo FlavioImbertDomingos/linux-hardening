@@ -1,0 +1,110 @@
+---
+- name: Resolve node_exporter version
+  ansible.builtin.include_tasks: github_latest.yml
+  vars:
+    observability_gh_repo: prometheus/node_exporter
+  when: observability_node_exporter_version == 'latest'
+
+- name: Set node_exporter version
+  ansible.builtin.set_fact:
+    observability_ne_version: "{{ observability_gh_version if observability_node_exporter_version == 'latest' else observability_node_exporter_version }}"
+
+- name: Create node_exporter system user
+  ansible.builtin.user:
+    name: node_exporter
+    system: true
+    shell: "{{ '/usr/sbin/nologin' if ansible_os_family == 'Debian' else '/sbin/nologin' }}"
+    home: /var/lib/node_exporter
+    create_home: false
+
+- name: Create node_exporter directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: node_exporter
+    group: node_exporter
+    mode: "0750"
+  loop:
+    - /var/lib/node_exporter
+    - "{{ observability_node_exporter_textfile_dir }}"
+
+- name: Check installed node_exporter version
+  ansible.builtin.command: /usr/local/bin/node_exporter --version
+  register: observability_ne_installed
+  changed_when: false
+  failed_when: false
+
+- name: Download node_exporter tarball and checksums
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ observability_ne_version }}/{{ item }}"
+    dest: "{{ observability_staging_dir }}/{{ item }}"
+    headers: "{{ {'Authorization': 'Bearer ' + observability_github_token} if observability_github_token | length > 0 else omit }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - "node_exporter-{{ observability_ne_version }}.linux-{{ observability_arch }}.tar.gz"
+    - sha256sums.txt
+  when: observability_ne_version not in observability_ne_installed.stdout | default('')
+
+- name: Verify node_exporter checksum (SI-7 integrity)
+  ansible.builtin.shell: |
+    set -o pipefail
+    cd {{ observability_staging_dir }}
+    grep " node_exporter-{{ observability_ne_version }}.linux-{{ observability_arch }}.tar.gz$" sha256sums.txt | sha256sum -c -
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: observability_ne_version not in observability_ne_installed.stdout | default('')
+
+- name: Unpack node_exporter
+  ansible.builtin.unarchive:
+    src: "{{ observability_staging_dir }}/node_exporter-{{ observability_ne_version }}.linux-{{ observability_arch }}.tar.gz"
+    dest: "{{ observability_staging_dir }}"
+    remote_src: true
+  when: observability_ne_version not in observability_ne_installed.stdout | default('')
+
+- name: Install node_exporter binary
+  ansible.builtin.copy:
+    src: "{{ observability_staging_dir }}/node_exporter-{{ observability_ne_version }}.linux-{{ observability_arch }}/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  when: observability_ne_version not in observability_ne_installed.stdout | default('')
+  notify: Restart node_exporter
+
+- name: Install node_exporter TLS web config (when exposed)
+  ansible.builtin.template:
+    src: node_exporter-web.yml.j2
+    dest: /etc/node_exporter-web.yml
+    owner: root
+    group: node_exporter
+    mode: "0640"
+  when: observability_node_exporter_tls_cert | length > 0
+  notify: Restart node_exporter
+
+- name: Install node_exporter systemd unit
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Enable node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    enabled: true
+    daemon_reload: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"
+
+- name: Label node_exporter binary for SELinux
+  community.general.sefcontext:
+    target: /usr/local/bin/node_exporter
+    setype: bin_t
+    state: present
+  when: ansible_os_family == 'RedHat' and not hardening_is_container | bool
+  notify: Restorecon node_exporter

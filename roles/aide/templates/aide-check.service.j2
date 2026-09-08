@@ -1,0 +1,17 @@
+# {{ ansible_managed }} — NIST SI-7(1) integrity checks
+[Unit]
+Description=AIDE file integrity check
+After=network-online.target
+ConditionPathExists={{ aide_db_dir }}/aide.db.gz
+
+[Service]
+Type=oneshot
+ExecStart={{ '/usr/sbin/aide' if ansible_os_family == 'RedHat' else '/usr/bin/aide' }} --check --config={{ aide_conf }}
+# Exit codes 1-7 mean "changes found" — that is a finding, not a unit failure.
+SuccessExitStatus=1 2 3 4 5 6 7
+Nice=19
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/var/log/aide {{ aide_db_dir }}
+PrivateTmp=true
+NoNewPrivileges=true

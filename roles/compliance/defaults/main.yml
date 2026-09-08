@@ -1,0 +1,30 @@
+---
+# OpenSCAP evaluation against SCAP Security Guide content (CA-2, CA-7, CM-6, RA-5).
+# Every SSG rule carries NIST 800-53 references; the HTML report lists them per rule.
+#
+# Profiles available in SSG (id suffix after xccdf_org.ssgproject.content_profile_):
+#   RHEL 8/9 : cis, cis_server_l1, cis_workstation_l1/l2, cui (800-171), ospp,
+#              stig, hipaa, pci-dss, e8, anssi_bp28_*, ccn_*
+#   Ubuntu   : cis_level1_server, cis_level2_server, stig, standard
+compliance_profile_map:
+  RedHat: cis_server_l1
+  Debian: cis_level1_server
+compliance_profile: "{{ compliance_profile_map[ansible_os_family] }}"
+
+# Optional tailoring file (controller path) to waive rules that cannot apply to an image.
+compliance_tailoring_file: ""
+compliance_tailoring_profile_id: ""
+
+# Fail the build below this pass percentage. 0 = report only (recommended until
+# you have tuned a tailoring file; partition rules etc. fail on single-disk images).
+compliance_min_score: 0
+
+# Ubuntu has no distro SSG package; content comes from the ComplianceAsCode release.
+compliance_ssg_version: "latest"    # or e.g. "0.1.78"
+compliance_github_token: "{{ lookup('env', 'GITHUB_TOKEN') | default('', true) }}"
+compliance_staging_dir: /var/lib/hardening/staging
+compliance_report_dir: /var/lib/sbom/compliance
+compliance_export_dir: "{{ sbom_export_dir | default(playbook_dir + '/../artifacts') }}"
+
+# Also emit a NIST 800-53 control-centric HTML guide for the chosen profile.
+compliance_generate_guide: true

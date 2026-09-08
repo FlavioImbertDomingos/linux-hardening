@@ -1,0 +1,15 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .github/
+  - packer/
+  - artifacts/
+skip_list:
+  - galaxy[no-changelog]
+  - galaxy[version-incorrect]
+  - meta-runtime[unsupported-version]
+warn_list:
+  - experimental
+  - command-instead-of-shell
+  - no-changed-when

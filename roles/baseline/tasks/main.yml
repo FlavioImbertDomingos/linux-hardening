@@ -1,0 +1,100 @@
+---
+- name: Load OS-family variables
+  ansible.builtin.include_vars: "{{ ansible_os_family }}.yml"
+  tags: [always]
+
+- name: Include package-manager hardening
+  ansible.builtin.include_tasks: "{{ ansible_os_family }}.yml"
+  tags: [nist_CM-5, nist_CM-6, nist_SI-2, nist_SI-7]
+
+- name: Upgrade all packages to current (SI-2 flaw remediation)
+  ansible.builtin.package:
+    name: "*"
+    state: latest # noqa package-latest — image build must start from fully patched base
+  when: baseline_upgrade_all | bool
+  tags: [nist_SI-2]
+
+- name: Install baseline packages
+  ansible.builtin.package:
+    name: "{{ baseline_packages_common + baseline_packages_family + baseline_packages_extra }}"
+    state: present
+  tags: [nist_CM-6]
+
+- name: Remove packages that violate least functionality (CM-7)
+  ansible.builtin.package:
+    name: "{{ baseline_packages_remove_common }}"
+    state: absent
+  tags: [nist_CM-7]
+
+- name: Collect service facts
+  ansible.builtin.service_facts:
+  tags: [nist_CM-7]
+
+- name: Disable and mask unnecessary services (CM-7)
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    masked: true
+    state: stopped
+  loop: "{{ baseline_services_disable }}"
+  when:
+    - item in ansible_facts.services or item.endswith('.target')
+    - not hardening_is_container | bool
+  failed_when: false
+  tags: [nist_CM-7]
+
+- name: Set timezone (AU-8 time stamps)
+  community.general.timezone:
+    name: "{{ baseline_timezone }}"
+  when: not hardening_is_container | bool
+  tags: [nist_AU-8]
+
+- name: Configure chrony (AU-8 / SC-45 time synchronisation)
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: "{{ baseline_chrony_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+  tags: [nist_AU-8, nist_SC-45]
+
+- name: Enable chrony
+  ansible.builtin.systemd:
+    name: "{{ baseline_chrony_service }}"
+    enabled: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"
+  tags: [nist_AU-8, nist_SC-45]
+
+- name: Enable process accounting (AU-12)
+  ansible.builtin.systemd:
+    name: "{{ 'psacct' if ansible_os_family == 'RedHat' else 'acct' }}"
+    enabled: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"
+  when: baseline_process_accounting | bool
+  tags: [nist_AU-12]
+
+- name: Ensure /etc/motd carries no version information (SC-7 information leakage)
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [nist_AC-8]
+
+- name: Disable dynamic MOTD scripts that leak inventory (Ubuntu)
+  ansible.builtin.file:
+    path: "/etc/update-motd.d/{{ item }}"
+    mode: "0644"
+  loop:
+    - 10-help-text
+    - 50-landscape-sysinfo
+    - 50-motd-news
+    - 80-esm
+    - 90-updates-available
+    - 91-release-upgrade
+    - 95-hwe-eol
+  failed_when: false
+  when: ansible_os_family == 'Debian'
+  tags: [nist_AC-8]

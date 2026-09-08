@@ -1,0 +1,18 @@
+# {{ ansible_managed }} — NIST AU-11 audit record retention
+/var/log/audit-syslog.log
+/var/log/sudo.log
+/var/log/aide/aide.log
+/var/log/nft-drop.log
+{
+    daily
+    rotate {{ logging_rotate_days }}
+    missingok
+    notifempty
+    {{ 'compress' if logging_rotate_compress | bool else 'nocompress' }}
+    delaycompress
+    create 0600 root root
+    sharedscripts
+    postrotate
+        /usr/bin/systemctl kill -s HUP rsyslog.service 2>/dev/null || true
+    endscript
+}

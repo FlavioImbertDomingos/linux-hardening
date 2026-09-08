@@ -1,0 +1,87 @@
+---
+- name: Install firewalld
+  ansible.builtin.package:
+    name: firewalld
+    state: present
+
+- name: Remove competing firewall stacks
+  ansible.builtin.package:
+    name: [iptables-services, ufw]   # nftables stays: firewalld's backend depends on it
+    state: absent
+
+- name: Enable firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    enabled: true
+    state: started
+
+- name: Set default zone to drop
+  ansible.builtin.command: firewall-cmd --set-default-zone=drop
+  register: firewall_default_zone
+  changed_when: "'ZONE_ALREADY_SET' not in firewall_default_zone.stderr"
+  failed_when: false
+
+- name: Remove default services from the drop zone
+  ansible.posix.firewalld:
+    zone: drop
+    service: "{{ item }}"
+    state: disabled
+    permanent: true
+    immediate: true
+  loop: [cockpit, dhcpv6-client, ssh]
+  failed_when: false
+
+- name: Allow SSH from admin networks
+  ansible.posix.firewalld:
+    zone: drop
+    rich_rule: 'rule family="ipv4" source address="{{ item }}" port port="{{ firewall_ssh_port }}" protocol="tcp" accept'
+    state: enabled
+    permanent: true
+    immediate: true
+  loop: "{{ firewall_admin_cidrs }}"
+  when: firewall_admin_cidrs | length > 0
+
+- name: Allow SSH from anywhere (no admin CIDRs defined)
+  ansible.posix.firewalld:
+    zone: drop
+    port: "{{ firewall_ssh_port }}/tcp"
+    state: enabled
+    permanent: true
+    immediate: true
+  when: firewall_admin_cidrs | length == 0
+
+- name: Allow node_exporter scrapes from monitoring networks
+  ansible.posix.firewalld:
+    zone: drop
+    rich_rule: 'rule family="ipv4" source address="{{ item }}" port port="{{ firewall_node_exporter_port }}" protocol="tcp" accept'
+    state: enabled
+    permanent: true
+    immediate: true
+  loop: "{{ firewall_monitoring_cidrs }}"
+  when: firewall_expose_node_exporter | bool
+
+- name: Allow extra inbound rules
+  ansible.builtin.include_tasks: firewalld_rule.yml
+  loop: "{{ firewall_extra_rules }}"
+  loop_control:
+    loop_var: firewall_rule
+    label: "{{ firewall_rule.port }}/{{ firewall_rule.proto | default('tcp') }}"
+
+- name: Rate-limit ICMP echo
+  ansible.posix.firewalld:
+    zone: drop
+    rich_rule: 'rule protocol value="icmp" accept limit value="{{ firewall_icmp_ratelimit }}"'
+    state: enabled
+    permanent: true
+    immediate: true
+
+- name: Log dropped packets (AU-2)
+  ansible.builtin.command: firewall-cmd --set-log-denied=unicast
+  register: firewall_logdenied
+  changed_when: "'ALREADY_SET' not in firewall_logdenied.stderr"
+  failed_when: false
+  when: firewall_log_dropped | bool
+
+- name: Reload firewalld
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: true

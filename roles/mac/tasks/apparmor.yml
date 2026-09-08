@@ -1,0 +1,51 @@
+---
+- name: Ensure AppArmor packages are present
+  ansible.builtin.package:
+    name:
+      - apparmor
+      - apparmor-utils
+      - apparmor-profiles
+      - apparmor-profiles-extra
+    state: present
+
+- name: Enable AppArmor service
+  ansible.builtin.systemd:
+    name: apparmor
+    enabled: true
+    state: "{{ 'started' if not hardening_is_container | bool else omit }}"
+
+# Ubuntu 24.04 (apparmor 4) ships ~40 `flags=(unconfined)` stub profiles; aa-enforce
+# would strip that flag and turn them into deny-everything profiles. Only profiles
+# that are currently in complain mode are moved to enforce.
+- name: Find profiles in complain mode
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -lE '^[^#]*flags=\([^)]*complain[^)]*\)' /etc/apparmor.d/* 2>/dev/null \
+      | grep -vE '\.(dpkg-|md$)|/README$' || true
+  args:
+    executable: /bin/bash
+  register: mac_apparmor_complain_files
+  changed_when: false
+
+- name: Move complain-mode profiles to enforce (AC-3)
+  ansible.builtin.command: "aa-enforce {{ item }}"
+  loop: "{{ mac_apparmor_complain_files.stdout_lines }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  changed_when: true
+  when:
+    - mac_apparmor_enforce_all | bool
+    - not hardening_is_container | bool
+    - item | basename not in mac_apparmor_complain
+
+- name: Keep selected profiles in complain mode
+  ansible.builtin.command: "aa-complain /etc/apparmor.d/{{ item }}"
+  loop: "{{ mac_apparmor_complain }}"
+  changed_when: true
+  when: not hardening_is_container | bool
+
+- name: Reload AppArmor profiles
+  ansible.builtin.systemd:
+    name: apparmor
+    state: reloaded
+  when: not hardening_is_container | bool

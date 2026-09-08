@@ -1,0 +1,28 @@
+---
+- name: Create controller export directory
+  ansible.builtin.file:
+    path: "{{ sbom_export_dir }}/{{ inventory_hostname }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  become: false
+
+- name: List artefacts to export
+  ansible.builtin.find:
+    paths: "{{ sbom_dir }}"
+    patterns: "{{ sbom_basename }}.*,grype.yaml"
+  register: sbom_export_files
+
+- name: Fetch artefacts to the controller (CI archives these with the image)
+  ansible.builtin.fetch:
+    src: "{{ item.path }}"
+    dest: "{{ sbom_export_dir }}/{{ inventory_hostname }}/"
+    flat: true
+    mode: "0640"
+  loop: "{{ sbom_export_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Export summary
+  ansible.builtin.debug:
+    msg: "{{ sbom_export_files.files | length }} artefacts exported to {{ sbom_export_dir }}/{{ inventory_hostname }}/"

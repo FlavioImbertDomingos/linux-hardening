@@ -1,0 +1,111 @@
+---
+# Bootstrap order matters: cosign first (checksum-verified, then self-verified
+# against its Sigstore signature), then cosign verifies syft/grype releases.
+- name: Resolve "latest" versions from GitHub
+  ansible.builtin.include_tasks: github_latest.yml
+  vars:
+    sbom_gh_repo: "{{ item.repo }}"
+  loop:
+    - { repo: sigstore/cosign, pinned: "{{ sbom_cosign_version }}" }
+    - { repo: anchore/syft, pinned: "{{ sbom_syft_version }}" }
+    - { repo: anchore/grype, pinned: "{{ sbom_grype_version }}" }
+  loop_control:
+    label: "{{ item.repo }}"
+  when: item.pinned == 'latest'
+
+- name: Set effective tool versions
+  ansible.builtin.set_fact:
+    sbom_cosign_v: "{{ sbom_resolved['sigstore/cosign'] | default(sbom_cosign_version) }}"
+    sbom_syft_v: "{{ sbom_resolved['anchore/syft'] | default(sbom_syft_version) }}"
+    sbom_grype_v: "{{ sbom_resolved['anchore/grype'] | default(sbom_grype_version) }}"
+  vars:
+    sbom_resolved: "{{ sbom_resolved_versions | default({}) }}"
+
+- name: Check installed tool versions
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "cosign=$(/usr/local/bin/cosign version --json 2>/dev/null | jq -r .gitVersion 2>/dev/null | sed 's/^v//')"
+    echo "syft=$(/usr/local/bin/syft version -o json 2>/dev/null | jq -r .version 2>/dev/null)"
+    echo "grype=$(/usr/local/bin/grype version -o json 2>/dev/null | jq -r .version 2>/dev/null)"
+  args:
+    executable: /bin/bash
+  register: sbom_tools_installed
+  changed_when: false
+  failed_when: false
+
+- name: Parse installed versions
+  ansible.builtin.set_fact:
+    sbom_installed: "{{ dict(sbom_tools_installed.stdout_lines | map('split', '=', 1)) }}"
+
+# --------------------------------------------------------------------------
+# cosign
+# --------------------------------------------------------------------------
+- name: Download cosign, checksums and keyless signature
+  ansible.builtin.get_url:
+    url: "https://github.com/sigstore/cosign/releases/download/v{{ sbom_cosign_v }}/{{ item }}"
+    dest: "{{ sbom_staging_dir }}/{{ item }}"
+    headers: "{{ {'Authorization': 'Bearer ' + sbom_github_token} if sbom_github_token | length > 0 else omit }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - "cosign-linux-{{ sbom_arch }}"
+    - cosign_checksums.txt
+    - cosign_checksums.txt.sigstore.json   # Sigstore bundle (cosign >= 3.0)
+  when: sbom_installed.cosign | default('') != sbom_cosign_v
+
+- name: Verify cosign checksum
+  ansible.builtin.shell: |
+    set -o pipefail
+    cd {{ sbom_staging_dir }}
+    grep " cosign-linux-{{ sbom_arch }}$" cosign_checksums.txt | sha256sum -c -
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: sbom_installed.cosign | default('') != sbom_cosign_v
+
+- name: Install cosign
+  ansible.builtin.copy:
+    src: "{{ sbom_staging_dir }}/cosign-linux-{{ sbom_arch }}"
+    dest: /usr/local/bin/cosign
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  when: sbom_installed.cosign | default('') != sbom_cosign_v
+
+- name: Verify cosign's release signature with the freshly installed binary (SR-4, SI-7)
+  ansible.builtin.command: >-
+    /usr/local/bin/cosign verify-blob
+    --certificate-identity-regexp '{{ sbom_cosign_cert_identity_regexp }}'
+    --certificate-oidc-issuer '{{ sbom_oidc_issuer }}'
+    --bundle {{ sbom_staging_dir }}/cosign_checksums.txt.sigstore.json
+    {{ sbom_staging_dir }}/cosign_checksums.txt
+  changed_when: false
+  when:
+    - sbom_verify_signatures | bool
+    - sbom_installed.cosign | default('') != sbom_cosign_v
+
+# --------------------------------------------------------------------------
+# syft / grype (Anchore) — checksum file is Sigstore-signed
+# --------------------------------------------------------------------------
+- name: Install Anchore tools
+  ansible.builtin.include_tasks: install_anchore_tool.yml
+  vars:
+    sbom_tool: "{{ item.name }}"
+    sbom_tool_version: "{{ item.version }}"
+    sbom_tool_identity: "{{ item.identity }}"
+  loop:
+    - { name: syft, version: "{{ sbom_syft_v }}", identity: "{{ sbom_syft_cert_identity_regexp }}" }
+    - { name: grype, version: "{{ sbom_grype_v }}", identity: "{{ sbom_grype_cert_identity_regexp }}" }
+  loop_control:
+    label: "{{ item.name }} {{ item.version }}"
+  when: sbom_installed[item.name] | default('') != item.version
+
+- name: Label tools for SELinux
+  community.general.sefcontext:
+    target: "/usr/local/bin/{{ item }}"
+    setype: bin_t
+    state: present
+  loop: [cosign, syft, grype]
+  when: ansible_os_family == 'RedHat' and not hardening_is_container | bool

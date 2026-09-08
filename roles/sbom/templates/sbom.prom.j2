@@ -1,0 +1,21 @@
+# {{ ansible_managed }} — scraped by node_exporter textfile collector (NIST SI-4, RA-5)
+# HELP image_vulnerabilities Vulnerabilities found in the image SBOM at build time, by severity.
+# TYPE image_vulnerabilities gauge
+image_vulnerabilities{severity="critical",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.critical }}
+image_vulnerabilities{severity="high",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.high }}
+image_vulnerabilities{severity="medium",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.medium }}
+image_vulnerabilities{severity="low",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.low }}
+image_vulnerabilities{severity="negligible",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.negligible }}
+# HELP image_vulnerabilities_fixable Vulnerabilities with an upstream fix available.
+# TYPE image_vulnerabilities_fixable gauge
+image_vulnerabilities_fixable{severity="critical",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.critical_fixed }}
+image_vulnerabilities_fixable{severity="high",image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.high_fixed }}
+# HELP image_vulnerabilities_accepted Findings suppressed by documented risk acceptance.
+# TYPE image_vulnerabilities_accepted gauge
+image_vulnerabilities_accepted{image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_summary.ignored }}
+# HELP image_sbom_components Number of components in the image SBOM.
+# TYPE image_sbom_components gauge
+image_sbom_components{image="{{ image_name }}",version="{{ image_version }}"} {{ sbom_component_count.stdout }}
+# HELP image_build_timestamp_seconds Unix time the image was scanned/built.
+# TYPE image_build_timestamp_seconds gauge
+image_build_timestamp_seconds{image="{{ image_name }}",version="{{ image_version }}",git_sha="{{ image_git_sha }}"} {{ ansible_date_time.epoch }}

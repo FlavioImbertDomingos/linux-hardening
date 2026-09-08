@@ -1,0 +1,51 @@
+---
+- name: Resolve latest ComplianceAsCode release
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/ComplianceAsCode/content/releases/latest
+    headers: >-
+      {{ {'Accept': 'application/vnd.github+json'}
+         | combine({'Authorization': 'Bearer ' + compliance_github_token} if compliance_github_token | length > 0 else {}) }}
+    return_content: true
+  register: compliance_ssg_release
+  delegate_to: localhost
+  become: false
+  when: compliance_ssg_version == 'latest'
+
+- name: Set SSG version
+  ansible.builtin.set_fact:
+    compliance_ssg_v: "{{ compliance_ssg_release.json.tag_name | regex_replace('^v', '') if compliance_ssg_version == 'latest' else compliance_ssg_version }}"
+
+- name: Download SSG content bundle
+  ansible.builtin.get_url:
+    url: "https://github.com/ComplianceAsCode/content/releases/download/v{{ compliance_ssg_v }}/scap-security-guide-{{ compliance_ssg_v }}.zip"
+    dest: "{{ compliance_staging_dir }}/scap-security-guide-{{ compliance_ssg_v }}.zip"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Unpack SSG content
+  ansible.builtin.unarchive:
+    src: "{{ compliance_staging_dir }}/scap-security-guide-{{ compliance_ssg_v }}.zip"
+    dest: "{{ compliance_staging_dir }}"
+    remote_src: true
+
+- name: Ensure SSG content directory exists
+  ansible.builtin.file:
+    path: /usr/share/xml/scap/ssg/content
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install datastream for this Ubuntu release
+  ansible.builtin.copy:
+    src: "{{ compliance_staging_dir }}/scap-security-guide-{{ compliance_ssg_v }}/ssg-ubuntu{{ ansible_distribution_version | replace('.', '') }}-ds.xml"
+    dest: /usr/share/xml/scap/ssg/content/ssg-ubuntu{{ ansible_distribution_version | replace('.', '') }}-ds.xml
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set datastream path
+  ansible.builtin.set_fact:
+    compliance_datastream: "/usr/share/xml/scap/ssg/content/ssg-ubuntu{{ ansible_distribution_version | replace('.', '') }}-ds.xml"

@@ -1,0 +1,21 @@
+# {{ ansible_managed }} — NIST AU-8 / SC-45 authoritative time source
+{% for s in ntp_servers | default(['pool.ntp.org']) %}
+server {{ s }} iburst
+{% endfor %}
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+# Do not serve time or accept commands from the network
+port 0
+cmdport 0
+bindcmdaddress 127.0.0.1
+bindcmdaddress ::1
+leapsectz right/UTC
+logdir /var/log/chrony
+{% if ansible_os_family == 'RedHat' %}
+keyfile /etc/chrony.keys
+ntsdumpdir /var/lib/chrony
+{% else %}
+keyfile /etc/chrony/chrony.keys
+ntsdumpdir /var/lib/chrony
+{% endif %}

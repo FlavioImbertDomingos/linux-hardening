@@ -1,0 +1,14 @@
+---
+baseline_packages_family:
+  - audit
+  - dnf-automatic
+  - policycoreutils-python-utils
+  - scap-security-guide
+  - setools-console
+  - libselinux-utils
+  - psacct
+  - yum-utils
+baseline_pkg_mgr: dnf
+baseline_audit_pkg: audit
+baseline_chrony_conf: /etc/chrony.conf
+baseline_chrony_service: chronyd

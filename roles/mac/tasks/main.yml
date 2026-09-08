@@ -1,0 +1,10 @@
+---
+- name: Include SELinux tasks
+  ansible.builtin.include_tasks: selinux.yml
+  when: ansible_os_family == 'RedHat'
+  tags: [nist_AC-3, nist_AC-6, nist_SC-39]
+
+- name: Include AppArmor tasks
+  ansible.builtin.include_tasks: apparmor.yml
+  when: ansible_os_family == 'Debian'
+  tags: [nist_AC-3, nist_AC-6, nist_SC-39]

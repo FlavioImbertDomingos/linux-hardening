@@ -1,0 +1,49 @@
+# {{ ansible_managed }} — NIST SI-4 system monitoring
+[Unit]
+Description=Prometheus Node Exporter
+Documentation=https://github.com/prometheus/node_exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter \
+  --web.listen-address={{ observability_node_exporter_listen }} \
+{% if observability_node_exporter_tls_cert | length > 0 %}
+  --web.config.file=/etc/node_exporter-web.yml \
+{% endif %}
+  --collector.textfile.directory={{ observability_node_exporter_textfile_dir }} \
+{% for c in observability_node_exporter_collectors_enable %}
+  --collector.{{ c }} \
+{% endfor %}
+{% for c in observability_node_exporter_collectors_disable %}
+  --no-collector.{{ c }} \
+{% endfor %}
+  --log.level=warn
+Restart=always
+RestartSec=5
+
+# --- sandboxing ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/node_exporter
+
+[Install]
+WantedBy=multi-user.target

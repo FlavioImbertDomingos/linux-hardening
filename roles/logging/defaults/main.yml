@@ -1,0 +1,23 @@
+---
+# journald (AU-4, AU-9, AU-11)
+logging_journald_storage: persistent
+logging_journald_max_use: 2G
+logging_journald_keep_free: 1G
+logging_journald_max_file_size: 128M
+logging_journald_max_retention: 1month
+logging_journald_forward_to_syslog: true
+logging_journald_seal: true              # forward-secure sealing (AU-9(3))
+logging_journald_rate_limit_burst: 10000
+
+# rsyslog
+logging_rsyslog_file_mode: "0640"
+logging_rsyslog_dir_mode: "0750"
+# Optional RFC 5425 syslog-over-TLS forwarding (AU-4(1), AU-9(2)).
+logging_remote_host: "{{ log_remote_host | default('') }}"
+logging_remote_port: "{{ log_remote_port | default(6514) }}"
+logging_remote_ca_file: "{{ log_remote_ca_file | default('') }}"
+logging_remote_queue_size: 100000
+
+# logrotate (AU-11 retention)
+logging_rotate_days: 90
+logging_rotate_compress: true

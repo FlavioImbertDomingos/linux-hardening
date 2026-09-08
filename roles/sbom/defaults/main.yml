@@ -1,0 +1,88 @@
+---
+# =============================================================================
+# SBOM + vulnerability gate + attestation  (SR-3, SR-4, SR-11, RA-5, SI-2, SI-7, CM-8)
+# =============================================================================
+# Versions checked September 2026; "latest" resolves via GitHub API at build time.
+sbom_syft_version: "1.51.0"
+sbom_grype_version: "0.97.2"
+sbom_cosign_version: "3.1.3"
+sbom_github_token: "{{ lookup('env', 'GITHUB_TOKEN') | default('', true) }}"
+
+sbom_staging_dir: /var/lib/hardening/staging
+sbom_dir: /var/lib/sbom                     # lives inside the image (0750 root)
+sbom_export_dir: "{{ playbook_dir }}/../artifacts"   # controller-side copy for CI
+sbom_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+
+# ---- supply-chain verification of the tools themselves (SR-4, SI-7) ----
+# Verify the release checksums file signature with cosign (keyless, Sigstore)
+# before trusting it. Anchore signs syft/grype releases with GitHub Actions OIDC.
+sbom_verify_signatures: true
+sbom_syft_cert_identity_regexp: 'https://github.com/anchore/syft/.github/workflows/release.yaml@refs/tags/v.*'
+sbom_grype_cert_identity_regexp: 'https://github.com/anchore/grype/.github/workflows/release.yaml@refs/tags/v.*'
+sbom_cosign_cert_identity_regexp: 'https://github.com/sigstore/cosign/.github/workflows/release.yaml@refs/tags/v.*'
+sbom_oidc_issuer: https://token.actions.githubusercontent.com
+
+# ---- SBOM generation ----
+sbom_formats:
+  - spdx-json
+  - cyclonedx-json
+  - syft-json
+sbom_syft_excludes:
+  - ./proc
+  - ./sys
+  - ./dev
+  - ./run
+  - ./tmp
+  - ./var/tmp
+  - ./var/cache
+  - ./var/lib/hardening
+  - ./var/lib/sbom
+  - ./var/log
+  - ./home
+  - ./root/.ansible
+
+# ---- vulnerability gate (RA-5, SI-2) ----
+sbom_fail_on: high            # negligible|low|medium|high|critical
+sbom_only_fixed: true         # ignore findings with no available fix (still reported)
+sbom_enforce: true            # false = warn only
+sbom_grype_db_url: ""         # mirror for air-gapped builds (grype db.update-url)
+sbom_grype_db_auto_update: true
+# Accepted risks. Each entry needs a vulnerability id and a reason; recorded in the report.
+sbom_vuln_ignore: []
+#  - vulnerability: CVE-2024-XXXXX
+#    reason: "not reachable: package X is not exposed on this image"
+#    expires: "2026-12-31"
+
+# ---- package integrity (SI-7, CM-8) ----
+sbom_verify_package_integrity: true    # rpm -Va / debsums against package manifests
+sbom_fail_on_unsigned_packages: true   # RPM: every installed package must carry a GPG signature
+# Files the hardening itself changes on purpose (SUID stripped by the filesystem
+# role) — keep in sync with filesystem_strip_suid.
+sbom_integrity_allowlist:
+  - /usr/bin/chfn
+  - /usr/bin/chsh
+  - /usr/bin/wall
+  - /usr/bin/write
+  - /usr/bin/mount
+  - /usr/bin/umount
+  - /usr/bin/at
+  - /usr/bin/newgrp
+  - /usr/bin/gpasswd
+  - /usr/bin/fusermount
+  - /usr/bin/fusermount3
+  - /usr/bin/pkexec
+  - /usr/lib/openssh/ssh-keysign
+  - /usr/libexec/openssh/ssh-keysign
+  - /usr/sbin/pam_timestamp_check
+  - /usr/lib/systemd/system/tmp.mount
+
+# ---- attestation (SR-4(4), SI-7(15)) ----
+sbom_cosign_key: ""                    # controller path, "env://COSIGN_KEY", or KMS URI (awskms://..., gcpkms://..., hashivault://...)
+sbom_cosign_password: "{{ lookup('env', 'COSIGN_PASSWORD') | default('', true) }}"
+sbom_cosign_keyless: false             # Fulcio/Rekor keyless (needs OIDC identity in CI)
+sbom_rekor_upload: true                # transparency log (set false for private/air-gapped)
+
+# node_exporter textfile metrics for the SBOM/vuln posture (SI-4)
+sbom_textfile_dir: /var/lib/node_exporter/textfile

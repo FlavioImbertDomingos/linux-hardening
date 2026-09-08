@@ -1,0 +1,25 @@
+# {{ ansible_managed }} — vulnerability gate policy (NIST RA-5, SI-2, SR-3)
+check-for-app-update: false
+{% if sbom_grype_db_url | length > 0 %}
+db:
+  update-url: "{{ sbom_grype_db_url }}"
+  auto-update: {{ sbom_grype_db_auto_update | bool | lower }}
+{% else %}
+db:
+  auto-update: {{ sbom_grype_db_auto_update | bool | lower }}
+  max-allowed-built-age: 120h
+{% endif %}
+# Accepted risks — every entry must carry a reason (and ideally an expiry).
+# Ignored matches still appear in the JSON report under ignoredMatches.
+ignore:
+{% for i in sbom_vuln_ignore %}
+  - vulnerability: {{ i.vulnerability }}
+{% if i.package is defined %}
+    package:
+      name: {{ i.package }}
+{% endif %}
+    # reason: {{ i.reason | default('UNDOCUMENTED — add a reason') }}  expires: {{ i.expires | default('none') }}
+{% endfor %}
+{% if sbom_vuln_ignore | length == 0 %}
+  []
+{% endif %}

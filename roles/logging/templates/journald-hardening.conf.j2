@@ -1,0 +1,17 @@
+# {{ ansible_managed }} — NIST AU-4 / AU-9 / AU-11
+[Journal]
+Storage={{ logging_journald_storage }}
+Compress=yes
+Seal={{ 'yes' if logging_journald_seal | bool else 'no' }}
+SplitMode=uid
+SystemMaxUse={{ logging_journald_max_use }}
+SystemKeepFree={{ logging_journald_keep_free }}
+SystemMaxFileSize={{ logging_journald_max_file_size }}
+MaxRetentionSec={{ logging_journald_max_retention }}
+MaxFileSec=1week
+ForwardToSyslog={{ 'yes' if logging_journald_forward_to_syslog | bool else 'no' }}
+ForwardToWall=no
+ForwardToConsole=no
+RateLimitIntervalSec=30s
+RateLimitBurst={{ logging_journald_rate_limit_burst }}
+Audit=yes

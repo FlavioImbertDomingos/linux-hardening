@@ -77,7 +77,7 @@
     group: root
     mode: "0640"
     content: |
-      # {{ ansible_managed }} — NIST AU-9: rules immutable until reboot
+      # Managed by linux-hardening (Ansible) — do not edit by hand — NIST AU-9: rules immutable until reboot
       -e {{ auditd_enabled_flag }}
   notify: Load audit rules
   tags: [nist_AU-9]
@@ -89,7 +89,7 @@
     group: root
     mode: "0640"
     content: |
-      # {{ ansible_managed }} — NIST AU-6(4) central review
+      # Managed by linux-hardening (Ansible) — do not edit by hand — NIST AU-6(4) central review
       active = {{ 'yes' if auditd_syslog_plugin | bool else 'no' }}
       direction = out
       path = /sbin/audisp-syslog

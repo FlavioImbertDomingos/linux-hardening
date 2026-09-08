@@ -20,7 +20,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }}
+      # Managed by linux-hardening (Ansible) — do not edit by hand
       IMAGE_NAME={{ image_name }}
       IMAGE_VERSION={{ image_version }}
       IMAGE_GIT_SHA={{ image_git_sha }}
@@ -64,7 +64,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }} — NIST SC-12: unique host keys per instance
+      # Managed by linux-hardening (Ansible) — do not edit by hand — NIST SC-12: unique host keys per instance
       [Unit]
       Description=Regenerate SSH host keys on first boot
       Before=ssh.service sshd.service

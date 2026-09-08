@@ -54,18 +54,18 @@ jobs:
           version: latest
 
       - name: Packer init + validate
-        working-directory: packer
+        working-directory: packer/${{ inputs.target }}
         run: |
           packer init .
-          packer validate -var image_version="$IMAGE_VERSION" -var region="${{ vars.AWS_REGION || 'us-west-2' }}" ${{ inputs.target }}.pkr.hcl
+          packer validate -var image_version="$IMAGE_VERSION" -var region="${{ vars.AWS_REGION || 'us-west-2' }}" .
 
       - name: Packer build
-        working-directory: packer
+        working-directory: packer/${{ inputs.target }}
         run: |
           packer build -color=false -timestamp-ui \
             -var image_version="$IMAGE_VERSION" \
             -var region="${{ vars.AWS_REGION || 'us-west-2' }}" \
-            ${{ inputs.target }}.pkr.hcl
+            .
 
       - name: Upload SBOM, scan and compliance artefacts
         if: always()

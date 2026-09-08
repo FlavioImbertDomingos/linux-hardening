@@ -198,7 +198,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }} — NIST AC-6
+      # Managed by linux-hardening (Ansible) — do not edit by hand — NIST AC-6
       umask {{ filesystem_umask }}
   tags: [nist_AC-6]
 

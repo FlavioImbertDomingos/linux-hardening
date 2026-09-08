@@ -45,16 +45,17 @@ jobs:
       - uses: hashicorp/setup-packer@v3
         with:
           version: latest
-      - working-directory: packer
-        env:
+      # Packer merges every *.pkr.hcl in a directory into one build, so each
+      # template lives in its own folder under packer/.
+      - env:
           # plugin downloads go through the GitHub API; unauthenticated runners hit the rate limit
           PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          packer init .
-          packer validate -var image_version=ci ubuntu2404.pkr.hcl
-          packer validate -var image_version=ci rhel9-aws.pkr.hcl
-          # qemu template references a local SSH key; syntax check only in CI
-          packer validate -syntax-only rhel9.pkr.hcl
+          for d in packer/ubuntu2404 packer/rhel9-aws; do
+            (cd "$d" && packer init . && packer validate -var image_version=ci .)
+          done
+          # the qemu template references a local SSH key; syntax check only in CI
+          (cd packer/rhel9-qemu && packer init . && packer validate -syntax-only .)
 
   # Real image builds (VM + reboot + SBOM gate + OpenSCAP) are the manual
   # build-image.yml workflow (AWS via OIDC) or tests/local-vm.sh (Multipass).

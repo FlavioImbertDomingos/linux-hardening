@@ -1,8 +1,8 @@
 # Build a hardened RHEL 9 AMI from the official Red Hat marketplace AMI
 # (owner 309956199498). Same flow as ubuntu2404.pkr.hcl. Separate partitions
-# are not possible from a stock AMI; use rhel9.pkr.hcl (QEMU + kickstart) or
+# are not possible from a stock AMI; use ../rhel9-qemu (QEMU + kickstart) or
 # EC2 Image Builder with a custom block-device layout when CIS 1.1.x matters.
-#   packer init . && packer build -var image_version=2026.09.1 rhel9-aws.pkr.hcl
+#   cd packer/rhel9-aws && packer init . && packer build -var image_version=2026.09.1 .
 
 packer {
   required_plugins {
@@ -67,26 +67,26 @@ build {
   sources = ["source.amazon-ebs.rhel9"]
 
   provisioner "ansible" {
-    playbook_file           = "../playbooks/harden-image.yml"
+    playbook_file           = "../../playbooks/harden-image.yml"
     user                    = "ec2-user"
     use_proxy               = false
-    galaxy_file             = "../requirements.yml"
+    galaxy_file             = "../../requirements.yml"
     inventory_file_template = "{{ .HostAlias }} ansible_host={{ .Host }} ansible_user={{ .User }} ansible_port={{ .Port }} image_name=base-rhel9\n"
     groups                  = ["image_builders"]
     extra_arguments = [
       "-e", "image_version=${var.image_version}",
       "-e", "image_git_sha=${var.git_sha}",
-      "-e", "sbom_export_dir=${path.cwd}/../artifacts",
+      "-e", "sbom_export_dir=${path.cwd}/../../artifacts",
       "-e", "finalize_remove_build_user=false",
     ]
     ansible_env_vars = [
       "ANSIBLE_HOST_KEY_CHECKING=False",
-      "ANSIBLE_CONFIG=../ansible.cfg",
+      "ANSIBLE_CONFIG=../../ansible.cfg",
     ]
   }
 
   post-processor "manifest" {
-    output     = "../artifacts/packer-manifest-rhel9.json"
+    output     = "../../artifacts/packer-manifest-rhel9.json"
     strip_path = true
     custom_data = {
       image_version = var.image_version

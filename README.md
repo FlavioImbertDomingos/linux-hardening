@@ -90,7 +90,7 @@ roles/
   compliance    OpenSCAP + SSG, score threshold, report export
   finalize      provenance stamp, AIDE init, cleanup, first-boot key regeneration
 docs/controls-map.md         NIST control → role/task matrix
-packer/                      Packer templates: ubuntu2404 + rhel9-aws (AMI), rhel9 (QEMU + kickstart)
+packer/                      one dir per template: ubuntu2404, rhel9-aws (AMI), rhel9-qemu (kickstart)
 tests/local-vm.sh            end-to-end run against a throwaway Multipass VM
 tests/render-templates.yml   renders every template for 4 synthetic hosts; CI validates with real parsers
 .github/workflows/ci.yml     ansible-lint (production profile), syntax check, template + packer validation
@@ -341,11 +341,11 @@ The run uploads `artifacts/` (SBOM, scan, compliance report, Packer manifest wit
 **3. Packer from your workstation** — same templates, your own AWS credentials:
 
 ```bash
-cd packer && packer init .
-packer build -var image_version=2026.09.1 ubuntu2404.pkr.hcl
-packer build -var image_version=2026.09.1 rhel9-aws.pkr.hcl
+# one directory per template (Packer merges all *.pkr.hcl files in a directory)
+cd packer/ubuntu2404 && packer init . && packer build -var image_version=2026.09.1 .
+cd packer/rhel9-aws  && packer init . && packer build -var image_version=2026.09.1 .
 # RHEL 9 with the CIS partition layout (QEMU + kickstart, needs KVM and a RHEL ISO):
-packer build -var image_version=2026.09.1 -var iso_url=... -var iso_checksum=sha256:... rhel9.pkr.hcl
+cd packer/rhel9-qemu && packer init . && packer build -var image_version=2026.09.1 -var iso_url=... -var iso_checksum=sha256:... .
 ```
 
 In every case the host running Ansible is detected in the preflight play and allowed through the

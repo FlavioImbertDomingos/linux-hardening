@@ -33,6 +33,8 @@
     mode: "2755"
   tags: [nist_AU-4]
 
+# No `validate:` here: Ubuntu confines rsyslogd with AppArmor, which denies it
+# the temp file Ansible would hand it. The full configuration is checked below.
 - name: Configure rsyslog hardening and forwarding
   ansible.builtin.template:
     src: rsyslog-hardening.conf.j2
@@ -40,9 +42,15 @@
     owner: root
     group: root
     mode: "0640"
-    validate: "rsyslogd -N1 -f %s"
   notify: Restart rsyslog
   tags: [nist_AU-4, nist_AU-9]
+
+- name: Validate the complete rsyslog configuration
+  ansible.builtin.command: rsyslogd -N1
+  register: logging_rsyslog_check
+  changed_when: false
+  failed_when: logging_rsyslog_check.rc != 0
+  tags: [nist_AU-4]
 
 - name: Disable rsyslog network listeners (CM-7)
   ansible.builtin.replace:

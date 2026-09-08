@@ -90,7 +90,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }}
+      # Managed by linux-hardening (Ansible) — do not edit by hand
       GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT {{ kernel_cmdline_effective | join(' ') }} apparmor=1 security=apparmor"
   notify: Update grub
   when: ansible_os_family == 'Debian'

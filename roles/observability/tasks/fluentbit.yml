@@ -68,7 +68,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }}
+      # Managed by linux-hardening (Ansible) — do not edit by hand
       [Service]
       ExecStart=
       ExecStart=/opt/fluent-bit/bin/fluent-bit -c /etc/fluent-bit/fluent-bit.yaml

@@ -200,7 +200,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }} — outbound SSH hygiene (SC-8, SC-13)
+      # Managed by linux-hardening (Ansible) — do not edit by hand — outbound SSH hygiene (SC-8, SC-13)
       Host *
           HashKnownHosts yes
           ForwardAgent no

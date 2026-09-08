@@ -89,7 +89,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }} — NIST IA-5(1)
+      # Managed by linux-hardening (Ansible) — do not edit by hand — NIST IA-5(1)
       remember = {{ auth_pwhistory_remember }}
       enforce_for_root
   when: not (ansible_os_family == 'RedHat' and ansible_distribution_major_version == '8')
@@ -109,7 +109,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }} — NIST AC-11 / AC-12 session termination
+      # Managed by linux-hardening (Ansible) — do not edit by hand — NIST AC-11 / AC-12 session termination
       TMOUT={{ auth_tmout_seconds }}
       readonly TMOUT
       export TMOUT

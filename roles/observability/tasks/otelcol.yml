@@ -83,7 +83,7 @@
     mode: "0640"
     force: false
     content: |
-      # {{ ansible_managed }}
+      # Managed by linux-hardening (Ansible) — do not edit by hand
       OTELCOL_OPTIONS="--config=/etc/otelcol-contrib/config.yaml"
       OTEL_RESOURCE_ATTRIBUTES=image.name={{ image_name }},image.version={{ image_version }}
 
@@ -102,7 +102,7 @@
     group: root
     mode: "0644"
     content: |
-      # {{ ansible_managed }}
+      # Managed by linux-hardening (Ansible) — do not edit by hand
       [Service]
       NoNewPrivileges=true
       ProtectSystem=strict

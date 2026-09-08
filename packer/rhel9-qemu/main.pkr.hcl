@@ -1,6 +1,6 @@
 # Example: build a hardened RHEL 9 QCOW2 with Packer + QEMU from a kickstart that
 # lays out the CIS/STIG partition scheme, then run the playbook.
-#   packer init . && packer build -var image_version=2026.09.1 -var iso_url=... rhel9.pkr.hcl
+#   cd packer/rhel9-qemu && packer init . && packer build -var image_version=2026.09.1 -var iso_url=... .
 
 packer {
   required_plugins {
@@ -55,23 +55,23 @@ build {
   sources = ["source.qemu.rhel9"]
 
   provisioner "ansible" {
-    playbook_file = "../playbooks/harden-image.yml"
+    playbook_file = "../../playbooks/harden-image.yml"
     user          = "builder"
     use_proxy     = false
-    galaxy_file   = "../requirements.yml"
+    galaxy_file   = "../../requirements.yml"
     inventory_file_template = "{{ .HostAlias }} ansible_host={{ .Host }} ansible_user={{ .User }} ansible_port={{ .Port }} image_name=base-rhel9\n"
     groups        = ["image_builders"]
     extra_arguments = [
       "-e", "image_version=${var.image_version}",
       "-e", "image_git_sha=${var.git_sha}",
-      "-e", "sbom_export_dir=${path.cwd}/../artifacts",
+      "-e", "sbom_export_dir=${path.cwd}/../../artifacts",
       "-e", "finalize_remove_build_user=true",   # break-glass access is via cloud-init keys, not this account
     ]
-    ansible_env_vars = ["ANSIBLE_HOST_KEY_CHECKING=False", "ANSIBLE_CONFIG=../ansible.cfg"]
+    ansible_env_vars = ["ANSIBLE_HOST_KEY_CHECKING=False", "ANSIBLE_CONFIG=../../ansible.cfg"]
   }
 
   post-processor "manifest" {
-    output      = "../artifacts/packer-manifest-rhel9.json"
+    output      = "../../artifacts/packer-manifest-rhel9.json"
     custom_data = {
       image_version = var.image_version
       git_sha       = var.git_sha

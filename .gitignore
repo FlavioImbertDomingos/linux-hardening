@@ -3,3 +3,4 @@ artifacts/
 *.retry
 output-*/
 packer_cache/
+inventory/local-*.yml

@@ -8,8 +8,8 @@
 #   tests/local-vm.sh 24.04 verify    # only run verify.yml against an existing VM
 #   tests/local-vm.sh 24.04 destroy   # delete the VM
 #
-# The VM keeps NOPASSWD sudo for `ubuntu` until finalize seals it, exactly like
-# a Packer build. Artefacts land in ./artifacts/<vm-name>/.
+# Unlike a real build, `ubuntu` keeps NOPASSWD sudo after the seal so you can
+# re-run verify/roles. Artefacts land in ./artifacts/<vm-name>/.
 # On Apple Silicon the VM is aarch64 — the playbook supports it (audit rules,
 # node_exporter/otelcol/syft/grype arm64 builds).
 # =============================================================================
@@ -20,7 +20,8 @@ RELEASE="${1:-24.04}"
 ACTION="${2:-build}"
 VM="lh-ubuntu${RELEASE//./}"
 KEY="${HOME}/.ssh/linux-hardening-test"
-INV="$(pwd)/artifacts/${VM}-inventory.yml"
+# Generated inside inventory/ so inventory/group_vars/all.yml is picked up.
+INV="$(pwd)/inventory/local-${VM}.yml"
 
 need() { command -v "$1" >/dev/null || { echo "missing: $1"; exit 1; }; }
 need multipass; need ansible-playbook
@@ -49,7 +50,7 @@ EOF
 fi
 
 IP=$(multipass info "$VM" --format json | python3 -c 'import sys,json; d=json.load(sys.stdin)["info"]; print(list(d.values())[0]["ipv4"][0])')
-mkdir -p artifacts
+mkdir -p artifacts inventory
 cat > "$INV" <<EOF
 all:
   children:
@@ -70,8 +71,9 @@ export GIT_SHA="${GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo loca
 # Local-test overrides: the SSH allow-list is whatever the VM sees us as
 # (handled automatically by the preflight play), telemetry has nowhere to go
 # (harmless: the collector queues and retries), signing is off unless you
-# export COSIGN_KEY, and the build user is kept so you can still get in.
-COMMON=(-i "$INV" -e finalize_remove_build_user=false)
+# export COSIGN_KEY, and — unlike a real image build — the `ubuntu` account keeps
+# password-less sudo so `verify` / `--tags` re-runs still work after the seal.
+COMMON=(-i "$INV" -e finalize_remove_build_user=false -e finalize_strip_build_user_nopasswd=false)
 
 case "$ACTION" in
   build)  ansible-playbook "${COMMON[@]}" playbooks/harden-image.yml "${@:3}" ;;

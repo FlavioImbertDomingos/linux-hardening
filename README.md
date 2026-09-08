@@ -24,6 +24,7 @@ evidence and signed manifest ship both inside the image and next to it.
 - [What it does](#what-it-does)
 - [Layout](#layout)
 - [Quick start](#quick-start)
+- [Try it locally in 15 minutes](#try-it-locally-in-15-minutes)
 - [The SBOM guarantee, precisely](#the-sbom-guarantee-precisely)
 - [Important defaults you may want to change](#important-defaults-you-may-want-to-change)
 - [Prerequisites and caveats](#prerequisites-and-caveats)
@@ -129,6 +130,111 @@ Check a running fleet for drift (read-only):
 ansible-playbook playbooks/verify.yml -i prod-inventory.yml
 ```
 
+## Try it locally in 15 minutes
+
+You don't need AWS, Packer or a real server to see the playbook work. `tests/local-vm.sh`
+launches a throwaway Ubuntu VM on your own machine with [Multipass](https://multipass.run),
+runs the whole pipeline against it (harden → reboot → verify → SBOM gate → OpenSCAP → seal),
+and leaves the evidence in `artifacts/`.
+
+### What you need
+
+| | macOS (Intel or Apple Silicon) | Linux |
+|---|---|---|
+| Multipass | `brew install --cask multipass` | `sudo snap install multipass` |
+| Ansible ≥ 2.15 | `brew install ansible` | `pip install ansible` |
+| Free resources | 2 CPUs, 4 GB RAM, 20 GB disk for the VM | same |
+| Network | outbound HTTPS to GitHub, Ubuntu mirrors, packages.fluentbit.io, Anchore DB | same |
+
+Apple Silicon builds an **aarch64** image; the playbook supports it (arm64 tool downloads,
+aarch64-safe audit rules). Everything below is identical on x86_64.
+
+### Steps
+
+```bash
+# 1. get the code
+git clone https://github.com/FlavioImbertDomingos/linux-hardening.git
+cd linux-hardening
+ansible-galaxy collection install -r requirements.yml
+
+# 2. build and harden a VM (first run downloads the Ubuntu image; ~10-15 min total)
+tests/local-vm.sh                 # Ubuntu 24.04 (default)
+tests/local-vm.sh 22.04           # or Ubuntu 22.04
+```
+
+The script generates an SSH key (`~/.ssh/linux-hardening-test`), launches a VM named
+`lh-ubuntu2404`, writes an inventory to `inventory/local-lh-ubuntu2404.yml` (next to
+`group_vars/`, so the defaults apply), and runs
+`playbooks/harden-image.yml`. You will see the plays go by in order:
+
+```
+PLAY [Preflight]                              OS check, controller IP detected
+PLAY [Harden operating system]                11 roles, ~250 tasks
+PLAY [Reboot so kernel, MAC and mount changes are live]
+PLAY [Verify hardened state]                  ~60 assertions must pass
+PLAY [Software bill of materials, vulnerability gate and compliance scan]
+PLAY [Finalise image]                         AIDE baseline, cleanup, seal
+```
+
+A successful run ends with `failed=0` for the host and a line like
+`base-ubuntu2404-test v0.0.0-local finalised — AIDE_DB_SHA256=…; SEALED`.
+
+### Look at the results
+
+```bash
+ls artifacts/lh-ubuntu2404/
+#   base-ubuntu2404-test-0.0.0-local.spdx-json.json      SBOM (SPDX)
+#   base-ubuntu2404-test-0.0.0-local.cyclonedx-json.json SBOM (CycloneDX)
+#   base-ubuntu2404-test-0.0.0-local.vulns.txt           Grype findings, human readable
+#   base-ubuntu2404-test-0.0.0-local.vulns.sarif         same, for code-scanning tools
+#   base-ubuntu2404-test-0.0.0-local.manifest.json       tool versions, counts, gate result, hashes
+#   base-ubuntu2404-test-0.0.0-local.report.html         OpenSCAP report (open in a browser)
+
+# inside the VM
+multipass shell lh-ubuntu2404
+  cat /etc/image-release             # provenance stamp
+  sudo auditctl -l | wc -l           # ~190 audit rules loaded
+  sudo auditctl -s | grep enabled    # enabled 2 = immutable
+  sshd -T | grep -Ei 'permitrootlogin|passwordauthentication|kexalgorithms'
+  cat /proc/cmdline                  # lockdown=integrity init_on_alloc=1 ... audit=1
+  sudo aa-status | head -3           # AppArmor profiles enforced
+  sudo nft list ruleset | head -40   # default-deny firewall
+  systemctl status auditd otelcol-contrib fluent-bit node_exporter --no-pager
+  curl -s localhost:9100/metrics | grep ^image_vulnerabilities
+  sudo ls /var/lib/sbom              # the same evidence, shipped in the image
+```
+
+One deliberate difference from a real image build: the script keeps password-less sudo for the
+`ubuntu` account after the seal (`finalize_strip_build_user_nopasswd=false`) so that the
+`verify` and `--tags` re-runs below still work. Packer builds strip it.
+
+### Iterate
+
+```bash
+tests/local-vm.sh 24.04 verify          # re-run only the ~60 drift assertions (seconds)
+tests/local-vm.sh 24.04 build --tags ssh,firewall   # re-apply selected roles
+tests/local-vm.sh 24.04 destroy         # throw the VM away
+```
+
+Try tightening or loosening a default (for example `sbom_fail_on: critical` or
+`auditd_log_all_execve: true` in `inventory/group_vars/all.yml`), destroy, and run again.
+
+### If something fails
+
+* **`Vulnerability gate failed`** — the base image has a High/Critical CVE with a fix that the
+  Ubuntu mirror hasn't caught up with yet. Read `artifacts/…/vulns.txt`; either wait for the
+  update, add a documented entry to `sbom_vuln_ignore`, or run once with
+  `-e sbom_enforce=false` to see the rest of the pipeline.
+* **Verify assertions fail on kernel cmdline** — the VM did not reboot (check
+  `hardening_reboot: true`) or GRUB did not regenerate; `multipass shell` and run
+  `sudo update-grub`, then `tests/local-vm.sh 24.04 verify`.
+* **Download errors from GitHub (403 / rate limit)** — export `GITHUB_TOKEN=<personal token>`
+  before running; the tool installers use it for the releases API.
+* **`multipass launch` hangs on macOS** — first launch needs the Ubuntu image (~600 MB); also
+  confirm Multipass is allowed under *System Settings → Privacy & Security*.
+* Anything else: the failing task name tells you the role and NIST control; rerun with `-vv`
+  appended (`tests/local-vm.sh 24.04 build -vv`).
+
 ## The SBOM guarantee, precisely
 
 1. **Tool trust** — `cosign` is downloaded and sha256-checked, then verifies its *own* Sigstore
@@ -218,21 +324,8 @@ on the templates under `packer/`.
 CI proves the playbook is well-formed; only a real VM exercises the reboot, the verify play, the
 Grype gate and the OpenSCAP scan. Three ways, cheapest first.
 
-**1. Local throwaway VM (Multipass, ~15 min, free)** — the fastest feedback loop while you tune
-defaults. Works on macOS (Apple Silicon builds an aarch64 image, which the playbook supports) and Linux.
-
-```bash
-brew install multipass          # or: sudo snap install multipass
-tests/local-vm.sh               # Ubuntu 24.04: launch VM, run harden-image.yml end-to-end
-tests/local-vm.sh 22.04         # Ubuntu 22.04
-tests/local-vm.sh 24.04 verify  # re-run only the drift checks
-multipass shell lh-ubuntu2404   # poke around: auditctl -l, sshd -T, cat /etc/image-release
-tests/local-vm.sh 24.04 destroy
-```
-
-Artefacts (SBOMs, `vulns.txt`, manifest, OpenSCAP report) land in `artifacts/lh-ubuntu2404/`.
-The VM keeps the `ubuntu` account (`finalize_remove_build_user=false`) so you can still log in
-after sealing; telemetry export simply queues because there is no gateway.
+**1. Local throwaway VM (Multipass, ~15 min, free)** — see
+[Try it locally in 15 minutes](#try-it-locally-in-15-minutes) above.
 
 **2. AWS AMI from GitHub Actions (manual, ~25 min)** — `Actions → build-image → Run workflow`,
 pick `ubuntu2404` or `rhel9-aws`. One-time setup in *Settings → Secrets and variables*:

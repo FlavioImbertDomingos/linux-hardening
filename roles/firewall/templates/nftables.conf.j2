@@ -32,6 +32,10 @@ table inet filter {
         ip6 nexthdr icmpv6 icmpv6 type echo-request limit rate {{ firewall_icmp_ratelimit }} accept
 
         # SSH (AC-17)
+{% if firewall_allow_build_controller | bool and firewall_build_controller_ip is match('^[0-9.]+$') %}
+        # build-time only: host running Ansible (removed by the finalize play)
+        ip saddr {{ firewall_build_controller_ip }} tcp dport {{ firewall_ssh_port }} accept
+{% endif %}
 {% if firewall_admin_cidrs | length > 0 %}
         ip saddr @admin_v4 tcp dport {{ firewall_ssh_port }} ct state new limit rate 15/minute accept
 {% else %}

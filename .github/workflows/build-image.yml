@@ -1,0 +1,75 @@
+---
+# Build a real hardened AMI with Packer. Manual trigger (workflow_dispatch) —
+# it costs money and takes ~25 minutes. Needs, in the repo settings:
+#   Secrets:   AWS_ROLE_ARN        IAM role trusted by GitHub OIDC with EC2/AMI permissions
+#              COSIGN_KEY          (optional) cosign private key PEM
+#              COSIGN_PASSWORD     (optional) its passphrase
+#   Variables: AWS_REGION          e.g. us-west-2 (default below)
+name: build-image
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Image to build
+        type: choice
+        options: [ubuntu2404, rhel9-aws]
+        default: ubuntu2404
+      image_version:
+        description: Version stamp (default = run number)
+        type: string
+        default: ""
+
+permissions:
+  id-token: write   # AWS OIDC
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      IMAGE_VERSION: ${{ inputs.image_version != '' && inputs.image_version || format('0.{0}.0', github.run_number) }}
+      GIT_SHA: ${{ github.sha }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      PACKER_LOG: 0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-west-2' }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ansible
+      - run: ansible-galaxy collection install -r requirements.yml
+
+      - uses: hashicorp/setup-packer@v3
+        with:
+          version: latest
+
+      - name: Packer init + validate
+        working-directory: packer
+        run: |
+          packer init .
+          packer validate -var image_version="$IMAGE_VERSION" -var region="${{ vars.AWS_REGION || 'us-west-2' }}" ${{ inputs.target }}.pkr.hcl
+
+      - name: Packer build
+        working-directory: packer
+        run: |
+          packer build -color=false -timestamp-ui \
+            -var image_version="$IMAGE_VERSION" \
+            -var region="${{ vars.AWS_REGION || 'us-west-2' }}" \
+            ${{ inputs.target }}.pkr.hcl
+
+      - name: Upload SBOM, scan and compliance artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-artifacts-${{ inputs.target }}-${{ env.IMAGE_VERSION }}
+          path: artifacts/
+          if-no-files-found: warn

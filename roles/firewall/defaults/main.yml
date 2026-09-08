@@ -7,6 +7,11 @@ firewall_monitoring_cidrs: "{{ hardening_monitoring_cidrs | default([]) }}"
 firewall_node_exporter_port: 9100
 # Only open 9100 when node_exporter listens beyond loopback.
 firewall_expose_node_exporter: "{{ not (node_exporter_listen | default('127.0.0.1:9100')).startswith('127.') }}"
+# Keep SSH open to the host running Ansible while the image is being built
+# (its address is detected in the preflight play). Turned off again by the
+# finalize play so the shipped image only trusts hardening_admin_cidrs.
+firewall_allow_build_controller: true
+firewall_build_controller_ip: "{{ hardening_build_controller_ip | default('') }}"
 # Additional inbound services: list of {port, proto, cidrs(optional)}
 firewall_extra_rules: []
 # Rate-limit ICMP echo instead of blocking it (keeps path MTU discovery working).

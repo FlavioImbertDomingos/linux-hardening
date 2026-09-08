@@ -24,6 +24,7 @@
       otel_exporter_endpoint: "otel.example.internal:4317"
       hardening_admin_cidrs: ["10.0.0.0/8"]
       hardening_monitoring_cidrs: ["10.1.0.0/16"]
+      hardening_build_controller_ip: "203.0.113.7"
       node_exporter_listen: "0.0.0.0:9100"
       log_remote_host: "syslog.example.internal"
       log_remote_ca_file: "/etc/ssl/certs/ca.pem"

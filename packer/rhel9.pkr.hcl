@@ -4,15 +4,30 @@
 
 packer {
   required_plugins {
-    qemu    = { source = "github.com/hashicorp/qemu", version = ">= 1.1.0" }
-    ansible = { source = "github.com/hashicorp/ansible", version = ">= 1.1.0" }
+    qemu = {
+      source  = "github.com/hashicorp/qemu"
+      version = ">= 1.1.0"
+    }
+    ansible = {
+      source  = "github.com/hashicorp/ansible"
+      version = ">= 1.1.0"
+    }
   }
 }
 
-variable "image_version" { type = string }
-variable "iso_url" { type = string }
-variable "iso_checksum" { type = string }
-variable "git_sha" { type = string, default = env("GIT_SHA") }
+variable "image_version" {
+  type = string
+}
+variable "iso_url" {
+  type = string
+}
+variable "iso_checksum" {
+  type = string
+}
+variable "git_sha" {
+  type    = string
+  default = env("GIT_SHA")
+}
 
 source "qemu" "rhel9" {
   iso_url          = var.iso_url
@@ -57,6 +72,9 @@ build {
 
   post-processor "manifest" {
     output      = "../artifacts/packer-manifest-rhel9.json"
-    custom_data = { image_version = var.image_version, git_sha = var.git_sha }
+    custom_data = {
+      image_version = var.image_version
+      git_sha       = var.git_sha
+    }
   }
 }

@@ -28,6 +28,7 @@ evidence and signed manifest ship both inside the image and next to it.
 - [Important defaults you may want to change](#important-defaults-you-may-want-to-change)
 - [Prerequisites and caveats](#prerequisites-and-caveats)
 - [Testing and CI](#testing-and-ci)
+- [Building a real image](#building-a-real-image)
 - [Versions](#versions)
 - [Contributing](#contributing)
 - [Security](#security)
@@ -88,9 +89,11 @@ roles/
   compliance    OpenSCAP + SSG, score threshold, report export
   finalize      provenance stamp, AIDE init, cleanup, first-boot key regeneration
 docs/controls-map.md         NIST control → role/task matrix
-packer/                      example Packer templates (RHEL 9, Ubuntu 24.04) invoking the playbook
+packer/                      Packer templates: ubuntu2404 + rhel9-aws (AMI), rhel9 (QEMU + kickstart)
+tests/local-vm.sh            end-to-end run against a throwaway Multipass VM
 tests/render-templates.yml   renders every template for 4 synthetic hosts; CI validates with real parsers
-.github/workflows/ci.yml     ansible-lint (production profile), syntax check, template validation
+.github/workflows/ci.yml     ansible-lint (production profile), syntax check, template + packer validation
+.github/workflows/build-image.yml  manual AMI build via Packer + AWS OIDC
 LICENSE                      MIT
 ```
 
@@ -207,9 +210,54 @@ RENDER_OUT=/tmp/render ansible-playbook tests/render-templates.yml   # 4 synthet
 sudo RENDER_OUT=/tmp/render bash tests/validate-rendered.sh          # sshd -t, visudo -c, nft -c, rsyslogd -N1, audit syscall tables, YAML/JSON
 ```
 
-`.github/workflows/ci.yml` runs exactly that on every push and pull request. Full image builds
-belong in your image pipeline (Packer / EC2 Image Builder) — see the commented `build` job in the
-workflow and the templates under `packer/`.
+`.github/workflows/ci.yml` runs exactly that on every push and pull request, plus `packer validate`
+on the templates under `packer/`.
+
+## Building a real image
+
+CI proves the playbook is well-formed; only a real VM exercises the reboot, the verify play, the
+Grype gate and the OpenSCAP scan. Three ways, cheapest first.
+
+**1. Local throwaway VM (Multipass, ~15 min, free)** — the fastest feedback loop while you tune
+defaults. Works on macOS (Apple Silicon builds an aarch64 image, which the playbook supports) and Linux.
+
+```bash
+brew install multipass          # or: sudo snap install multipass
+tests/local-vm.sh               # Ubuntu 24.04: launch VM, run harden-image.yml end-to-end
+tests/local-vm.sh 22.04         # Ubuntu 22.04
+tests/local-vm.sh 24.04 verify  # re-run only the drift checks
+multipass shell lh-ubuntu2404   # poke around: auditctl -l, sshd -T, cat /etc/image-release
+tests/local-vm.sh 24.04 destroy
+```
+
+Artefacts (SBOMs, `vulns.txt`, manifest, OpenSCAP report) land in `artifacts/lh-ubuntu2404/`.
+The VM keeps the `ubuntu` account (`finalize_remove_build_user=false`) so you can still log in
+after sealing; telemetry export simply queues because there is no gateway.
+
+**2. AWS AMI from GitHub Actions (manual, ~25 min)** — `Actions → build-image → Run workflow`,
+pick `ubuntu2404` or `rhel9-aws`. One-time setup in *Settings → Secrets and variables*:
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `AWS_ROLE_ARN` | secret | IAM role trusted by GitHub OIDC (`token.actions.githubusercontent.com`) with EC2 + AMI permissions |
+| `AWS_REGION` | variable | defaults to `us-west-2` |
+| `COSIGN_KEY` / `COSIGN_PASSWORD` | secret | optional — enables SBOM signing |
+
+The run uploads `artifacts/` (SBOM, scan, compliance report, Packer manifest with the AMI id).
+
+**3. Packer from your workstation** — same templates, your own AWS credentials:
+
+```bash
+cd packer && packer init .
+packer build -var image_version=2026.09.1 ubuntu2404.pkr.hcl
+packer build -var image_version=2026.09.1 rhel9-aws.pkr.hcl
+# RHEL 9 with the CIS partition layout (QEMU + kickstart, needs KVM and a RHEL ISO):
+packer build -var image_version=2026.09.1 -var iso_url=... -var iso_checksum=sha256:... rhel9.pkr.hcl
+```
+
+In every case the host running Ansible is detected in the preflight play and allowed through the
+firewall for the duration of the build only; the finalize play removes that allowance so the
+shipped image trusts nothing but `hardening_admin_cidrs`.
 
 ## Versions
 

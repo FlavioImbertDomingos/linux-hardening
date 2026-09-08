@@ -37,14 +37,21 @@ jobs:
           name: rendered-configs
           path: /tmp/render
 
-  # Full image builds run in your image pipeline (Packer/EC2 Image Builder) where a
-  # real VM, reboot and outbound access are available; wire it like this:
-  # build:
-  #   needs: render
-  #   runs-on: [self-hosted, packer]
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: packer init packer && packer build -var image_version=${{ github.run_number }} packer/ubuntu2404.pkr.hcl
-  #       env: { GIT_SHA: ${{ github.sha }}, GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}, COSIGN_KEY: ${{ secrets.COSIGN_KEY }}, COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }} }
-  #     - uses: actions/upload-artifact@v4
-  #       with: { name: sbom-and-compliance, path: artifacts/ }
+  packer:
+    name: packer fmt + validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-packer@v3
+        with:
+          version: latest
+      - working-directory: packer
+        run: |
+          packer init .
+          packer validate -var image_version=ci ubuntu2404.pkr.hcl
+          packer validate -var image_version=ci rhel9-aws.pkr.hcl
+          # qemu template references a local SSH key; syntax check only in CI
+          packer validate -syntax-only rhel9.pkr.hcl
+
+  # Real image builds (VM + reboot + SBOM gate + OpenSCAP) are the manual
+  # build-image.yml workflow (AWS via OIDC) or tests/local-vm.sh (Multipass).

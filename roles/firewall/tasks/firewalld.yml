@@ -41,6 +41,15 @@
   loop: "{{ firewall_admin_cidrs }}"
   when: firewall_admin_cidrs | length > 0
 
+- name: Build-time SSH allowance for the host running Ansible (removed by finalize)
+  ansible.posix.firewalld:
+    zone: drop
+    rich_rule: 'rule family="ipv4" source address="{{ firewall_build_controller_ip }}" port port="{{ firewall_ssh_port }}" protocol="tcp" accept'
+    state: "{{ 'enabled' if firewall_allow_build_controller | bool else 'disabled' }}"
+    permanent: true
+    immediate: true
+  when: firewall_build_controller_ip | length > 0 and firewall_build_controller_ip is match('^[0-9.]+$')
+
 - name: Allow SSH from anywhere (no admin CIDRs defined)
   ansible.posix.firewalld:
     zone: drop

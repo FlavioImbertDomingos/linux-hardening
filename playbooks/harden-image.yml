@@ -32,6 +32,20 @@
              or (ansible_virtualization_type | default('') in ['docker', 'podman', 'container', 'lxc'])
              and ansible_virtualization_role | default('') == 'guest' }}
 
+    # The machine running Ansible (Packer host, CI runner, your laptop) is usually
+    # not inside hardening_admin_cidrs. Remember its address so the firewall role
+    # keeps SSH open to it during the build; the finalize play removes it again.
+    - name: Read the SSH connection as the login user (sudo strips SSH_CONNECTION)
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      register: hardening_ssh_connection
+      changed_when: false
+      failed_when: false
+
+    - name: Record the build controller's address as seen by the target
+      ansible.builtin.set_fact:
+        hardening_build_controller_ip: "{{ (hardening_ssh_connection.stdout | default('')).split()[0] | default('') }}"
+
     - name: Print build context
       ansible.builtin.debug:
         msg: >-
@@ -81,5 +95,15 @@
 - name: Finalise image
   hosts: image_builders
   gather_facts: true
+  pre_tasks:
+    # Re-render the firewall without the build-time controller allowance. Handlers
+    # notified here are flushed before the finalize role runs (established SSH
+    # sessions survive the reload).
+    - name: Drop the build controller from the firewall allow-list
+      ansible.builtin.import_role:
+        name: firewall
+      vars:
+        firewall_allow_build_controller: false
+      tags: [firewall, finalize]
   roles:
     - { role: finalize, tags: [finalize] }

@@ -4,14 +4,28 @@
 
 packer {
   required_plugins {
-    amazon  = { source = "github.com/hashicorp/amazon", version = ">= 1.3.0" }
-    ansible = { source = "github.com/hashicorp/ansible", version = ">= 1.1.0" }
+    amazon = {
+      source  = "github.com/hashicorp/amazon"
+      version = ">= 1.3.0"
+    }
+    ansible = {
+      source  = "github.com/hashicorp/ansible"
+      version = ">= 1.1.0"
+    }
   }
 }
 
-variable "image_version" { type = string }
-variable "region" { type = string, default = "us-west-2" }
-variable "git_sha" { type = string, default = env("GIT_SHA") }
+variable "image_version" {
+  type = string
+}
+variable "region" {
+  type    = string
+  default = "us-west-2"
+}
+variable "git_sha" {
+  type    = string
+  default = env("GIT_SHA")
+}
 
 source "amazon-ebs" "ubuntu2404" {
   region        = var.region
@@ -75,6 +89,9 @@ build {
   post-processor "manifest" {
     output     = "../artifacts/packer-manifest-ubuntu2404.json"
     strip_path = true
-    custom_data = { image_version = var.image_version, git_sha = var.git_sha }
+    custom_data = {
+      image_version = var.image_version
+      git_sha       = var.git_sha
+    }
   }
 }
